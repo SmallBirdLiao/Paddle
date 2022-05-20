@@ -197,8 +197,8 @@ __global__ void dy_mf_update_kernel(Table* table,
 }
 
 template <typename KeyType, typename ValType>
-HashTable<KeyType, ValType>::HashTable(size_t capacity) {
-  container_ = new TableContainer<KeyType, ValType>(capacity);
+HashTable<KeyType, ValType>::HashTable(const gpuStream_t& stream, size_t capacity) {
+  container_ = new TableContainer<KeyType, ValType>(stream, capacity);
   rwlock_.reset(new phi::RWLock);
 }
 
@@ -210,6 +210,13 @@ HashTable<KeyType, ValType>::~HashTable() {
 template <typename KeyType, typename ValType>
 void HashTable<KeyType, ValType>::show() {
   container_->print();
+}
+
+template <typename KeyType, typename ValType>
+void HashTable<KeyType, ValType>::reset(const gpuStream_t& stream, size_t capacity) {
+  int dev_id = 0;
+  CUDA_RT_CALL(cudaGetDevice(&dev_id));
+  container_->reset(dev_id, stream, capacity);
 }
 
 template <typename KeyType, typename ValType>

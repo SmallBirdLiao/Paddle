@@ -32,6 +32,152 @@ limitations under the License. */
 namespace paddle {
 namespace framework {
 
+//设备资源复用器基类
+class ReuseDeviceBase {
+public:
+  virtual ~ReuseDeviceBase() {
+  };
+  virtual void clean() = 0;
+};
+
+//设备资源复用器管理者，用于外部控制进行资源的reset操作等
+class ReuseDeviceManager  {
+public:
+  void register_reuse(ReuseDeviceBase* ptr) {
+    resource_.insert(ptr);
+  }
+  void unregister_reuse(ReuseDeviceBase* ptr) {
+    resource_.erase(ptr);
+  }
+  static ReuseDeviceManager& get_instance() {
+    static ReuseDeviceManager ins;
+    return ins;
+  }
+  void clean() {
+    for (auto& iter : resource_) {
+      iter->clean();
+    }
+  }
+private:
+  std::set<ReuseDeviceBase*> resource_;
+};
+
+//Table资源复用器
+template <class T>
+class ReuseDeviceTable : public ReuseDeviceBase{
+public:
+  ReuseDeviceTable() {
+    ReuseDeviceManager::get_instance().register_reuse(this);
+  }
+  virtual ~ReuseDeviceTable() {
+    ReuseDeviceManager::get_instance().unregister_reuse(this);
+  }
+  static ReuseDeviceTable<T>& get_instance() {
+    static ReuseDeviceTable<T>* ins = nullptr;
+    if (ins == nullptr) {
+      ins = new ReuseDeviceTable<T>();
+    }
+    return *ins;
+  }
+  T* get_resource(size_t device_id, const gpuStream_t stream, size_t capacity_max, size_t capacity_min) {
+    if (device_id >= tables_.size()) {
+      tables_.resize(device_id + 1, nullptr);
+    }
+    if (tables_[device_id] == nullptr) {
+      return new T(stream, capacity_max);
+    } else if (tables_[device_id]->capacity() < capacity_min) {
+      delete tables_[device_id];
+      tables_[device_id] = nullptr;
+      return new T(stream, capacity_max);
+    } else {
+      capacity_max = capacity_max > tables_[device_id]->capacity() ? tables_[device_id]->capacity() : capacity_max;
+      tables_[device_id]->reset(stream, capacity_max);
+      auto ret = tables_[device_id];
+      tables_[device_id] = nullptr;
+      return ret;
+    }
+  }
+  void release_resource(size_t device_id, T* table_ptr) {
+    if (table_ptr == nullptr) {
+      return;
+    }
+    if (device_id > tables_.size()) {
+      std::cerr << "ERROR:ReuseDeviceTable in line " << __LINE__ << "of file " << __FILE__;
+      throw std::bad_alloc();
+    }
+    if (tables_[device_id] == nullptr) {
+      tables_[device_id] = table_ptr;
+    } else {
+      delete table_ptr;
+    }
+  }
+  virtual void clean() {
+    for (size_t i = 0; i < tables_.size(); i++) {
+      if (tables_[i] != nullptr) {
+        delete tables_[i];
+        tables_[i] = nullptr;
+      }
+    }
+  }
+private:
+  std::vector<T*> tables_;
+};
+
+//cub::CachingDeviceAllocator资源复用器
+class ReuseDeviceAllocator : public ReuseDeviceBase{
+public:
+  ReuseDeviceAllocator() {
+    ReuseDeviceManager::get_instance().register_reuse(this);
+  }
+  virtual ~ReuseDeviceAllocator() {
+    ReuseDeviceManager::get_instance().unregister_reuse(this);
+  }
+  static ReuseDeviceAllocator& get_instance() {
+    static ReuseDeviceAllocator* ins = nullptr;
+    if (ins == nullptr) {
+      ins = new ReuseDeviceAllocator();
+    }
+    return *ins;
+  }
+  template <class... Args>
+  cub::CachingDeviceAllocator* get_resource(size_t device_id, Args&&... args) {
+    if (device_id >= resource_.size()) {
+      resource_.resize(device_id + 1, nullptr);
+    }
+    if (resource_[device_id] == nullptr) {
+      return new cub::CachingDeviceAllocator(std::forward<Args>(args)...);
+    } else {
+      auto ret = resource_[device_id];
+      resource_[device_id] = nullptr;
+      return ret;
+    }
+  }
+  void release_resource(size_t device_id, cub::CachingDeviceAllocator* resource_ptr) {
+    if (resource_ptr == nullptr) {
+      return;
+    }
+    if (device_id > resource_.size()) {
+      std::cerr << "ERROR:ReuseDeviceAllocator in line " << __LINE__ << "of file " << __FILE__;
+      throw std::bad_alloc();
+    }
+    if (resource_[device_id] == nullptr) {
+      resource_[device_id] = resource_ptr;
+    } else {
+      delete resource_ptr;
+    }
+  }
+  virtual void clean() {
+    for (size_t i = 0; i < resource_.size(); i++) {
+      if (resource_[i] != nullptr) {
+        resource_[i]->FreeAllCached();
+      }
+    }
+  }
+private:
+  std::vector<cub::CachingDeviceAllocator*> resource_;
+};
+
+
 struct CustomGradMerger {
   template <typename T>
   CUB_RUNTIME_FUNCTION __forceinline__ __device__ T
@@ -178,7 +324,8 @@ class HeterComm {
   std::vector<Table*> tables_;
   std::shared_ptr<HeterPsResource> resource_;
   std::vector<std::vector<Path>> path_;
-  float load_factor_{0.75};
+  float load_factor_max_{0.82};
+  float load_factor_min_{0.72};
   int block_size_{256};
 
  private:
@@ -190,7 +337,7 @@ class HeterComm {
   std::vector<ncclComm_t> nccl_inner_comms_;
   std::vector<ncclComm_t> nccl_inter_comms_;
   int node_size_;
-  std::vector<std::shared_ptr<cub::CachingDeviceAllocator>> allocators_;
+  std::vector<cub::CachingDeviceAllocator*> allocators_;
 };
 
 }  // end namespace framework

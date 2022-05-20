@@ -336,7 +336,9 @@ class concurrent_unordered_map : public managed {
  public:
   concurrent_unordered_map(const concurrent_unordered_map&) = delete;
   concurrent_unordered_map& operator=(const concurrent_unordered_map&) = delete;
-  explicit concurrent_unordered_map(size_type n,
+  explicit concurrent_unordered_map(
+                                    const cudaStream_t& stream,
+                                    size_type n,
                                     const mapped_type unused_element,
                                     const Hasher& hf = hasher(),
                                     const Equality& eql = key_equal(),
@@ -367,15 +369,15 @@ class concurrent_unordered_map : public managed {
         int dev_id = 0;
         CUDA_RT_CALL(cudaGetDevice(&dev_id));
         CUDA_RT_CALL(cudaMemPrefetchAsync(
-            m_hashtbl_values, m_hashtbl_size * sizeof(value_type), dev_id, 0));
+            m_hashtbl_values, m_hashtbl_size * sizeof(value_type), dev_id, stream));
       }
     }
     // Initialize kernel, set all entry to unused <K,V>
-    init_hashtbl<<<((m_hashtbl_size - 1) / block_size) + 1, block_size>>>(
+    init_hashtbl<<<((m_hashtbl_size - 1) / block_size) + 1, block_size, 0, stream>>>(
         m_hashtbl_values, m_hashtbl_size, unused_key, m_unused_element);
     // CUDA_RT_CALL( cudaGetLastError() );
-    CUDA_RT_CALL(cudaStreamSynchronize(0));
-    CUDA_RT_CALL(cudaGetLastError());
+//    CUDA_RT_CALL(cudaStreamSynchronize(0));
+//    CUDA_RT_CALL(cudaGetLastError());
   }
 
   ~concurrent_unordered_map() {
@@ -399,6 +401,7 @@ class concurrent_unordered_map : public managed {
                           m_hashtbl_values + m_hashtbl_size);
   }
   __host__ __device__ size_type size() const { return m_hashtbl_size; }
+  __host__ __device__ size_type capacity() const { return m_hashtbl_capacity; }
   __host__ __device__ value_type* data() const { return m_hashtbl_values; }
 
   __forceinline__ static constexpr __host__ __device__ key_type
@@ -796,6 +799,15 @@ x.second );
     return 0;
   }
 
+  void reset(const int dev_id, cudaStream_t stream, size_t size) {
+    if (size > m_hashtbl_capacity) {
+      return;
+    }
+    m_hashtbl_size = size;
+    prefetch(dev_id, stream);
+    clear_async(stream);
+  }
+
   template <class comparison_type = key_equal,
             typename hash_value_type = typename Hasher::result_type>
   __forceinline__ __device__ const_iterator
@@ -816,7 +828,7 @@ x.second );
     return it;
   }
 
- private:
+private:
   const hasher m_hf;
   const key_equal m_equal;
 

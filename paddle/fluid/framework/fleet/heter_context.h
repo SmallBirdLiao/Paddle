@@ -37,6 +37,81 @@ limitations under the License. */
 namespace paddle {
 namespace framework {
 
+//pined内存的vector, 方便进行到显存的copy
+//只能用于基础类型。
+//(不会调用对象内部的构造函数和析构函数，使用的时候请注意)
+template <class _T>
+class PinnedVector {
+public:
+  using ValueType = _T;
+  PinnedVector() {
+    ptr_ = nullptr;
+    data_ = nullptr;
+    size_ = 0;
+    capacity_ = 0;
+  }
+  PinnedVector(const PinnedVector<_T>& value) = delete;
+  PinnedVector& operator=(const PinnedVector<_T>& value) = delete;
+  PinnedVector(PinnedVector<_T>&& value) {
+    size_ = value.size_;
+    capacity_ = value.capacity_;
+    std::swap(ptr_, value.ptr_);
+    value.data_ = nullptr;
+    data_ = reinterpret_cast<ValueType*>(ptr_->ptr());
+  }
+  PinnedVector& operator=(PinnedVector<_T>&& value) = delete;
+  void clear() {
+    ptr_ = nullptr;
+    data_ = nullptr;
+    size_ = 0;
+    capacity_ = 0;
+  }
+  void resize(size_t size) {
+    if (size > capacity_) {
+      auto ptr = memory::Alloc(phi::GPUPinnedPlace(), size * sizeof(ValueType));
+      if (size_ != 0) {
+        memcpy(ptr->ptr(), ptr_->ptr(), sizeof(ValueType) * size_);
+      }
+    
+      capacity_ = size;
+      std::swap(ptr, ptr_);
+      data_ = reinterpret_cast<ValueType*>(ptr_->ptr());
+    }
+    if (size > size_) {
+      /*
+      for (size_t i = size_; i < size; i++) {
+        new (data_ + i) ValueType();
+      }
+      */
+      size_ = size;
+    } else {
+      /*
+      for (size_t i = size; i < size_; i++) {
+        (data_ + i)->~ValueType();
+      }
+      */
+      size_ = size;
+    }
+  }
+  ValueType& operator[](size_t pos) {
+    return data_[pos];
+  }
+  size_t size() {
+    return size_;
+  }
+  size_t  capacity() {
+    return capacity_;
+  }
+  ValueType* data() {
+    return data_;
+  }
+private:
+  size_t size_ = 0;
+  size_t capacity_ = 0;
+  memory::allocation::AllocationPtr ptr_;
+  ValueType* data_;
+};
+
 class HeterContext {
  public:
   virtual ~HeterContext() {
@@ -77,8 +152,8 @@ class HeterContext {
   std::vector<std::vector<std::vector<paddle::distributed::FixedFeatureValue*>>>
       device_dim_ptr_;
 #endif
-  std::vector<std::vector<FeatureValue>> device_values_;
-  std::vector<std::vector<FeatureKey>> device_keys_;
+  std::vector<PinnedVector<FeatureValue>> device_values_;
+  std::vector<PinnedVector<FeatureKey>> device_keys_;
   std::vector<std::vector<std::vector<FeatureKey>>> device_dim_keys_;
   std::vector<std::vector<std::vector<FeatureValue>>> device_dim_values_;
   std::vector<std::mutex*> mutex_;

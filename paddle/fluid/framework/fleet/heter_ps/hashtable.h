@@ -41,16 +41,16 @@ class TableContainer
     : public concurrent_unordered_map<KeyType, ValType,
                                       std::numeric_limits<KeyType>::max()> {
  public:
-  TableContainer(size_t capacity)
+  TableContainer(const gpuStream_t& stream, size_t capacity)
       : concurrent_unordered_map<KeyType, ValType,
                                  std::numeric_limits<KeyType>::max()>(
-            capacity, ValType()) {}
+            stream, capacity, ValType()) {}
 };
 
 template <typename KeyType, typename ValType>
 class HashTable {
  public:
-  HashTable(size_t capacity);
+  HashTable(const gpuStream_t& stream, size_t capacity);
   virtual ~HashTable();
   HashTable(const HashTable&) = delete;
   HashTable& operator=(const HashTable&) = delete;
@@ -62,6 +62,7 @@ class HashTable {
            gpuStream_t stream);
   void get(const KeyType* d_keys, char* d_vals, size_t len, gpuStream_t stream);
   void show();
+  void reset(const gpuStream_t& stream, size_t capacity);
   void dump_to_cpu(int devid, cudaStream_t stream);
 
   template <typename GradType, typename Sgd>
@@ -73,6 +74,7 @@ class HashTable {
               gpuStream_t stream);
 
   int size() { return container_->size(); }
+  int capacity() { return container_->capacity(); }
 
   void set_feature_value_size(size_t pull_feature_value_size,
                               size_t push_grad_value_size) {

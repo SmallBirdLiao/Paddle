@@ -99,15 +99,22 @@ HeterComm<KeyType, ValType, GradType>::HeterComm(
     size_t capacity, std::shared_ptr<HeterPsResource> resource) {
   resource_ = resource;
   storage_.resize(resource_->total_gpu());
+  gpuStream_t streams[resource_->total_gpu()];
   for (int i = 0; i < resource_->total_gpu(); ++i) {
     platform::CUDADeviceGuard guard(resource_->dev_id(i));
-    allocators_.push_back(std::make_shared<cub::CachingDeviceAllocator>(
-        8, 1, (unsigned int)-1, (size_t)-1, false, false));  // NOLINT
-    auto table = new Table(capacity / load_factor_);
+    PADDLE_ENFORCE_GPU_SUCCESS(cudaStreamCreate(&(streams[i])));
+    auto allocators = ReuseDeviceAllocator::get_instance().get_resource(i, 8, 1, (unsigned int)-1, (size_t)-1, false, false);
+    allocators_.push_back(allocators);
+    auto table = ReuseDeviceTable<Table>::get_instance().get_resource(i, streams[i], capacity / load_factor_min_, capacity / load_factor_max_);
     tables_.push_back(table);
     if (multi_node_) {
       storage_[i].init(feanum_, resource_->dev_id(i));
     }
+  }
+  for (int i = 0; i < resource_->total_gpu(); ++i) {
+    platform::CUDADeviceGuard guard(resource_->dev_id(i));
+    cudaStreamSynchronize(streams[i]);
+    PADDLE_ENFORCE_GPU_SUCCESS(cudaStreamDestroy(streams[i]));
   }
   init_path();
 }
@@ -307,9 +314,13 @@ void HeterComm<KeyType, ValType, GradType>::walk_to_src(
 
 template <typename KeyType, typename ValType, typename GradType>
 HeterComm<KeyType, ValType, GradType>::~HeterComm() {
-  for (auto& table : tables_) {
-    delete table;
-    table = nullptr;
+  for (size_t i = 0; i < tables_.size(); i++) {
+    ReuseDeviceTable<Table>::get_instance().release_resource(i, tables_[i]);
+    tables_[i] = nullptr;
+  }
+  for (size_t i = 0; i < allocators_.size(); i++) {
+    ReuseDeviceAllocator::get_instance().release_resource(i, allocators_[i]);
+    allocators_[i] = nullptr;
   }
 }
 
@@ -362,6 +373,8 @@ void HeterComm<KeyType, ValType, GradType>::build_ps(int num, KeyType* h_keys,
 
   while (cur_len < len) {
     cur_stream = cur_stream % stream_num;
+    cudaStreamSynchronize(streams[cur_stream]);
+    
     int tmp_len = cur_len + chunk_size > len ? len - cur_len : chunk_size;
     PADDLE_ENFORCE_GPU_SUCCESS(
         cudaMemcpyAsync(d_key_bufs[cur_stream]->ptr(), h_keys + cur_len,
@@ -371,6 +384,7 @@ void HeterComm<KeyType, ValType, GradType>::build_ps(int num, KeyType* h_keys,
         cudaMemcpyAsync(d_val_bufs[cur_stream]->ptr(), h_vals + cur_len,
                         sizeof(ValType) * tmp_len, cudaMemcpyHostToDevice,
                         streams[cur_stream]));
+
     tables_[num]->insert(
         reinterpret_cast<KeyType*>(d_key_bufs[cur_stream]->ptr()),
         reinterpret_cast<ValType*>(d_val_bufs[cur_stream]->ptr()), tmp_len,
