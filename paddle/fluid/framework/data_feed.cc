@@ -2440,7 +2440,6 @@ void SlotRecordInMemoryDataFeed::PutToFeedVec(const SlotRecord* ins_vec,
     if (feed == nullptr) {
       continue;
     }
-
     auto& slot_offset = offset_[j];
     slot_offset.clear();
     slot_offset.reserve(num + 1);
