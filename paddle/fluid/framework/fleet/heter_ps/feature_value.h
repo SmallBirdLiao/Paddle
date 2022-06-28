@@ -20,6 +20,12 @@ limitations under the License. */
 #include "paddle/fluid/platform/device/gpu/gpu_helper.h"
 #include "paddle/fluid/platform/place.h"
 #include "paddle/fluid/memory/memory.h"
+#ifdef PADDLE_WITH_PSCORE
+#include "paddle/fluid/distributed/ps/wrapper/fleet.h"
+#endif
+#ifdef PADDLE_WITH_PSLIB
+#include <pslib.h>
+#endif
 
 namespace paddle {
 namespace framework {

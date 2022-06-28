@@ -14,6 +14,9 @@ limitations under the License. */
 
 #include <vector>
 #include "paddle/fluid/framework/fleet/heter_ps/heter_ps.h"
+#include "paddle/fluid/framework/fleet/heter_ps/feature_value_inl.h"
+#include "paddle/fluid/framework/fleet/heter_ps/gpu_value_inl.h"
+#include "paddle/fluid/framework/fleet/heter_ps/dy_gpu_value_inl.h"
 
 #ifdef PADDLE_WITH_HETERPS
 
