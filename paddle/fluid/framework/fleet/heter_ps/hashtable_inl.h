@@ -60,7 +60,7 @@ __global__ void search_kernel(Table* table,
       ValType& input = *(ValType*)(it->second);
       *cur = input;
     } else {
-      if (keys[i] != 0) printf("pull miss key: %d", keys[i]);
+      if (keys[i] != 0) printf("pull miss key: %llu", keys[i]);
       ValType* cur = (ValType*)(d_value + i * pull_feature_value_size);
       *cur = ValType();
     }
@@ -80,7 +80,7 @@ __global__ void update_kernel(Table* table,
       GradType* cur = (GradType*)(grads_tmp + i * grad_value_size);
       sgd.update_value((it.getter())->second, *cur, p_state[i]);
     } else {
-      if (keys[i] != 0) printf("push miss key: %d", keys[i]);
+      if (keys[i] != 0) printf("pull miss key: %llu", keys[i]);
     }
   }
 }

@@ -654,7 +654,6 @@ void PSGPUWrapper::EndPass() {
         continue;
       }
       size_t local_offset = (i - left) * feature_value_size;
-      
       void* gpu_val = (void*)(cpu_value_ptr + local_offset);
       g_transfor->value_gpu_to_cpu(gpu_val);
     }
