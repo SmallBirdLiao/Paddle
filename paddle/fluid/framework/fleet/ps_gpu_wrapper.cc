@@ -452,7 +452,7 @@ void PSGPUWrapper::BuildGPUTask(std::shared_ptr<HeterContext> gpu_task) {
   HeterPs_ = HeterPsBase::get_instance(size_max, resource_, ps_accessor_type_, gpu_value_type_);
   CHECK(HeterPs_ != nullptr);
   HeterPs_->set_nccl_comm_and_size(inner_comms_, inter_comms_, node_size_);
-  HeterPs_->set_multi_mf_dim(max_mf_dim_);
+  HeterPs_->set_multi_mf_dim(multi_mf_dim_, max_mf_dim_);
 
   //step5, cpu数据转化到gpu数据，并构造gpu-table了
   auto transfor_value_obj = g_transfor;

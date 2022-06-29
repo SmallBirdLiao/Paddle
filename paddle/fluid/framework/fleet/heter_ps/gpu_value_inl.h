@@ -32,6 +32,9 @@ struct GpuValue {
   int mf_size;
   float mf[8 + 1];
   uint64_t cpu_ptr;
+  friend std::ostream& operator<<(std::ostream& out, GpuValue& val) {
+    return out;
+  }
   __host__ __device__ __forceinline__ GpuValue() {
     delta_score = 0;
     show = 0;
@@ -143,8 +146,16 @@ class Optimizer<GpuValue, GpuPushValue> {
     }
     g2sum += add_g2sum / n;
   }
+
+  //主要为了兼容，真正用的就只有下面一个函数
+  __device__ void update_value(GpuValue& val, const GpuPushValue& grad) {
+  }
+  __device__ void update_value(GpuValue& val, const GpuPushValue& grad, curandState& state) {
+  }
+  __device__ void dy_mf_update_value(GpuValue* ptr, const GpuPushValue& grad) {
+  }
   
-  __device__ void update_value(GpuValue* ptr, const GpuPushValue& grad, curandState& state) {
+  __device__ void dy_mf_update_value(GpuValue* ptr, const GpuPushValue& grad, curandState& state) {
     ptr->slot = grad.slot;
     ptr->show += grad.show;
     ptr->clk += grad.clk;

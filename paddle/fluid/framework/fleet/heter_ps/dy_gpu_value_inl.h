@@ -33,6 +33,9 @@ struct DyGpuValue {
   int mf_dim;
   uint64_t cpu_ptr;
   float mf[0];
+  friend std::ostream& operator<<(std::ostream& out, DyGpuValue& val) {
+    return out;
+  }
   __host__ __device__ __forceinline__ DyGpuValue() {
     delta_score = 0;
     show = 0;
@@ -151,8 +154,16 @@ class Optimizer<DyGpuValue, DyGpuPushValue> {
     }
     g2sum += add_g2sum / n;
   }
+
+  //主要为了兼容，真正用的就只有下面一个函数
+  __device__ void update_value(DyGpuValue& val, const DyGpuPushValue& grad) {
+  }
+  __device__ void update_value(DyGpuValue& val, const DyGpuPushValue& grad, curandState& state) {
+  }
+  __device__ void dy_mf_update_value(DyGpuValue* ptr, const DyGpuPushValue& grad) {
+  }
   
-  __device__ void update_value(DyGpuValue* ptr, const DyGpuPushValue& grad, curandState& state) {
+  __device__ void dy_mf_update_value(DyGpuValue* ptr, const DyGpuPushValue& grad, curandState& state) {
     ptr->slot = grad.slot;
     ptr->show += grad.show;
     ptr->clk += grad.clk;

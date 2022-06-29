@@ -34,6 +34,8 @@ namespace framework {
 
 typedef uint64_t FeatureKey;
 
+#define MF_DIM 8
+
 class ValueTransfor {
 public:
   virtual int get_gpu_value_size(int dim_size) = 0;

@@ -35,14 +35,15 @@ HeterPsBase* HeterPsBase::get_instance(
 }
 
 template <typename KeyType, typename ValType, typename GradType>
-HeterPs<KeyType, ValType, GradType>::HeterPs() {
+HeterPs<KeyType, ValType, GradType>::HeterPs(size_t capacity, std::shared_ptr<HeterPsResource> resource) {
+  comm_ =
+      std::make_shared<HeterComm<KeyType, ValType, GradType>>(
+          capacity, resource);
+  opt_ = Optimizer<ValType, GradType>();
 }
 
 template <typename KeyType, typename ValType, typename GradType>
-HeterPs<KeyType, ValType, GradType>::HeterPs(size_t capacity, std::shared_ptr<HeterPsResource> resource) {
-  comm_ = std::make_shared<HeterComm<KeyType, ValType, GradType>>(capacity, resource);
-  opt_ = Optimizer<ValType, GradType>();
-}
+HeterPs<KeyType, ValType, GradType>::~HeterPs() {}
 
 template <typename KeyType, typename ValType, typename GradType>
 void HeterPs<KeyType, ValType, GradType>::pull_sparse(int num, FeatureKey* d_keys, void* d_vals,
@@ -51,9 +52,27 @@ void HeterPs<KeyType, ValType, GradType>::pull_sparse(int num, FeatureKey* d_key
 }
 
 template <typename KeyType, typename ValType, typename GradType>
-void HeterPs<KeyType, ValType, GradType>::build_ps(int num, KeyType* h_keys, char* pool,
-            size_t len, size_t feature_value_size, size_t chunk_size, int stream_num) {
+void HeterPs<KeyType, ValType, GradType>::build_ps(int num, FeatureKey* h_keys, char* pool,
+                       size_t len, size_t feature_value_size, size_t chunk_size, int stream_num) {
   comm_->build_ps(num, h_keys, pool, len, feature_value_size, chunk_size, stream_num);
+}
+
+template <typename KeyType, typename ValType, typename GradType>
+int HeterPs<KeyType, ValType, GradType>::get_index_by_devid(int devid) {
+  return comm_->get_index_by_devid(devid);
+}
+
+template <typename KeyType, typename ValType, typename GradType>
+void HeterPs<KeyType, ValType, GradType>::end_pass() { comm_->end_pass(); }
+
+template <typename KeyType, typename ValType, typename GradType>
+void HeterPs<KeyType, ValType, GradType>::show_one_table(int gpu_num) { comm_->show_one_table(gpu_num); }
+
+template <typename KeyType, typename ValType, typename GradType>
+void HeterPs<KeyType, ValType, GradType>::push_sparse(int num, FeatureKey* d_keys,
+                          void* d_grads, size_t len) {
+   comm_->push_sparse(num, d_keys, (GradType*)d_grads, len, opt_);
+  // comm_->push_sparse_multi_node(num, d_keys, d_grads, len, opt_);
 }
 
 template <typename KeyType, typename ValType, typename GradType>
@@ -64,21 +83,9 @@ void HeterPs<KeyType, ValType, GradType>::set_nccl_comm_and_size(
 }
 
 template <typename KeyType, typename ValType, typename GradType>
-void HeterPs<KeyType, ValType, GradType>::set_multi_mf_dim(int max_mf_dim) {
-  comm_->set_multi_mf_dim(max_mf_dim);
+void HeterPs<KeyType, ValType, GradType>::set_multi_mf_dim(int multi_mf_dim, int max_mf_dim) {
+  comm_->set_multi_mf_dim(multi_mf_dim, max_mf_dim);
 }
-
-template <typename KeyType, typename ValType, typename GradType>
-int HeterPs<KeyType, ValType, GradType>::get_index_by_devid(int devid) {
-  return comm_->get_index_by_devid(devid);
-}
-
-template <typename KeyType, typename ValType, typename GradType>
-void HeterPs<KeyType, ValType, GradType>::push_sparse(int num, FeatureKey* d_keys, void* d_grads, size_t len) {
-   comm_->push_sparse(num, d_keys, (GradType*)d_grads, len, opt_);
-}
-
-
 
 }  // end namespace framework
 }  // end namespace paddle

@@ -54,13 +54,23 @@ class HashTable {
   virtual ~HashTable();
   HashTable(const HashTable&) = delete;
   HashTable& operator=(const HashTable&) = delete;
+  void insert(const KeyType* d_keys, const ValType* d_vals, size_t len,
+              gpuStream_t stream);
   void insert(const KeyType* d_keys, size_t len, char* pool, size_t feature_value_size,
               size_t start_index, gpuStream_t stream);
-  void get(const KeyType* d_keys, ValType d_vals, size_t len, gpuStream_t stream);
+  void get(const KeyType* d_keys, ValType* d_vals, size_t len,
+           gpuStream_t stream);
+  void get(gpuStream_t stream, const KeyType* d_keys, ValType d_vals, size_t len);
   void show();
+  void dump_to_cpu(int devid, cudaStream_t stream);
+
   template <typename GradType, typename Sgd>
-  void update(const KeyType* d_keys, const GradType* d_grads, size_t len, Sgd sgd,
-              gpuStream_t stream);
+  void update(const KeyType* d_keys, const GradType* d_grads, size_t len,
+              Sgd sgd, gpuStream_t stream);
+
+  template <typename GradType, typename Sgd>
+  void update(const KeyType* d_keys, const GradType* d_grads, size_t len, gpuStream_t stream,
+              Sgd sgd);
 
   int size() { return container_->size(); }
 
