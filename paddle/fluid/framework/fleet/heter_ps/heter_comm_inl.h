@@ -753,8 +753,8 @@ void HeterComm<KeyType, ValType, GradType>::merge_grad(int gpu_num,
   timeline.Start();
   grid_size = (uniq_len - 1) / block_size_ + 1;
   merge_gradient_kernel<<<grid_size, block_size_, 0, stream>>>(
-      d_offset, d_fea_num_info_ptr, d_index, (char*)d_grads,
-      (char*)d_merge_grads_ptr, uniq_len, grad_value_size);
+      d_offset, d_fea_num_info_ptr, d_index, (GradType*)d_grads,
+      (GradType*)d_merge_grads_ptr, uniq_len, grad_value_size);
   PADDLE_ENFORCE_GPU_SUCCESS(cudaStreamSynchronize(stream));
   timeline.Pause();
   timeline.Start();
