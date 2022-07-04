@@ -366,6 +366,12 @@ class PSGPUWrapper {
     for (size_t i = 0; i < pull_thread_pool_.size(); i++) {
       pull_thread_pool_[i].reset(new ::ThreadPool(1));
     }
+
+    uniq_thread_pool_.resize(32);
+    for (size_t i = 0; i < 32; i++) {
+      uniq_thread_pool_[i].reset(new ::ThreadPool(1));
+    }
+
     GlobalValueTransfor::get_instance().init(ps_accessor_type_, gpu_value_type_);
     slot_info_initialized_ = true;
   }
@@ -451,6 +457,8 @@ class PSGPUWrapper {
   bool running_ = false;
   std::vector<std::shared_ptr<ThreadPool>> hbm_thread_pool_;
   std::vector<std::shared_ptr<ThreadPool>> pull_thread_pool_;
+
+  std::vector<std::shared_ptr<ThreadPool>> uniq_thread_pool_;
 
  protected:
   static bool is_initialized_;
