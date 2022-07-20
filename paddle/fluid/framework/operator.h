@@ -46,6 +46,7 @@ limitations under the License. */
 #include "paddle/phi/core/compat/op_utils.h"
 #include "paddle/phi/core/kernel_context.h"
 #include "paddle/phi/core/kernel_factory.h"
+#include "paddle/fluid/platform/timer.h"
 
 namespace paddle {
 namespace framework {
@@ -230,6 +231,15 @@ class OperatorBase {
       const platform::Place& place) const {
     return place;
   }
+
+  public:
+    mutable uint64_t lxch_time_1;
+    mutable uint64_t lxch_time_2;
+    mutable uint64_t lxch_time_3;
+    mutable uint64_t lxch_time_4;
+    mutable uint64_t lxch_time_5;
+    mutable uint64_t lxch_time_6;
+    mutable uint64_t lxch_time_7;
 
  protected:
   std::string type_;

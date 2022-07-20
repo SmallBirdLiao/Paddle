@@ -69,8 +69,10 @@ class SequencePadGradOpKernel : public framework::OpKernel<T> {
       d_x->mutable_data<T>(ctx.GetPlace());
 
       int padded_length = ctx.Attr<int>("padded_length");
-
-      math::UnpaddingLoDTensorFunctor<DeviceContext, T>()(
+ 
+      math::UnpaddingLoDTensorFunctor<DeviceContext, T> obj;
+      obj.scope = &(ctx.scope());
+      obj(
           ctx.template device_context<DeviceContext>(), *d_out, d_x,
           padded_length, 0, false, math::kBatchLengthWidth);
     }

@@ -84,11 +84,14 @@ class HeterComm {
 
   void split_input_to_shard(KeyType* d_keys, int* d_idx_ptr, size_t len,
                             int* left, int* right, int gpu_num);
+  void lxch_split_input_to_shard(revert_info* d_keys, int* d_idx_ptr, size_t len,
+                            int* left, int* right, int gpu_num);
   void merge_grad(int gpu_num, KeyType* d_keys, GradType* d_grads, size_t len,
                   int& uniq_len);  // NOLINT
   void merge_grad(int gpu_num, KeyType* d_keys, GradType* d_grads, float* mf,
                   size_t len, int& uniq_len);
   void pull_sparse(int num, KeyType* d_keys, ValType* d_vals, size_t len);
+  void lxch_pull_sparse(int num, KeyType* d_keys, ValType* d_vals, size_t len);
   void build_ps(int num, KeyType* h_keys, ValType* h_vals, size_t len,
                 size_t chunk_size, int stream_num);
   void build_ps(int num, KeyType* h_keys, char* pool, size_t len, size_t feature_value_size,
@@ -97,6 +100,10 @@ class HeterComm {
   void show_one_table(int gpu_num);
   int get_index_by_devid(int devid);
 
+  template <typename Sgd>
+  void lxch_push_sparse(int num, KeyType* d_keys, GradType* d_grads, size_t len,
+                   Sgd& sgd);  // NOLINT
+  
   template <typename Sgd>
   void push_sparse(int num, KeyType* d_keys, GradType* d_grads, size_t len,
                    Sgd& sgd);  // NOLINT
@@ -143,6 +150,10 @@ class HeterComm {
   int get_transfer_devid(int send_id) { return (send_id + 4) % 8; }
 
   struct Node {
+    Node() {
+      key_storage = nullptr;
+      val_storage = nullptr;
+    }
     cudaStream_t in_stream;
     cudaStream_t out_stream;
     char* key_storage;
@@ -201,30 +212,49 @@ class HeterComm {
     GradType* local_grads;
   };
 
+  struct SpiltKeysInfo {
+    memory::allocation::AllocationPtr d_uniq_size_1;
+    memory::allocation::AllocationPtr d_revert_info_1;
+    memory::allocation::AllocationPtr d_sort_idxs;
+    memory::allocation::AllocationPtr h_uniq_size;
+    memory::allocation::AllocationPtr h_shard_left;
+    memory::allocation::AllocationPtr h_shard_right;
+    memory::allocation::AllocationPtr h_normal_size;
+  };
+
   void init_path();
 
   void create_storage(int start_index, int end_index, size_t keylen, size_t vallen);
   void destroy_storage(int start_index, int end_index);
+  template<typename KeyInfo>
   void walk_to_dest(int start_index, int gpu_num, int* h_left, int* h_right,
-                    KeyType* src_key, GradType* src_val);
+                    KeyInfo* src_key, GradType* src_val);
+  template <typename KeyInfo>
   void walk_to_dest(int start_index, int gpu_num, int* h_left, int* h_right,
-                    KeyType* src_key, char* src_val, size_t val_size);
+                    KeyInfo* src_key, char* src_val, size_t val_size);
   void walk_to_src(int start_index, int gpu_num, int* h_left, int* h_right,
                    ValType* src_val);
   void walk_to_src(int start_index, int gpu_num, int* h_left, int* h_right,
                    char* src_val, size_t val_size);
-
+  void lxch_barrir();
  protected:
   using Table = HashTable<KeyType, ValType>;
   using PtrTable = HashTable<KeyType, ValType*>;
   std::vector<Table*> tables_;
   std::vector<PtrTable*> ptr_tables_;
+  std::atomic<uint64_t> barrir_1_;
+  std::atomic<uint64_t> barrir_2_;
+//  std::set<uint64_t> lxch_test_set;
+  std::mutex mutex_;
+  //0 老的， 1 新的, 2 做diff
+  uint32_t lxch_run_flag_ {1};
   std::shared_ptr<HeterPsResource> resource_;
   std::vector<std::vector<Path>> path_;
-  float load_factor_{0.75};
+  float load_factor_{0.21};
   int block_size_{256};
 
  private:
+  std::vector<SpiltKeysInfo> split_key_info_;
   std::vector<LocalStorage> storage_;
   CustomGradMerger merger_;
   int topo_aware_{0};

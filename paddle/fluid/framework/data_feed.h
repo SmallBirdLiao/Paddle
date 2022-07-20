@@ -848,6 +848,10 @@ class DataFeed {
   // This function is used for binding feed_vec memory in a given scope
   virtual void AssignFeedVar(const Scope& scope);
 
+  virtual std::vector<std::string> get_input_var_names() {
+    return std::vector<std::string>();
+  }
+
   virtual std::vector<std::string> GetInputVarNames() {
     return std::vector<std::string>();
   }
@@ -1470,7 +1474,13 @@ class SlotRecordInMemoryDataFeed : public InMemoryDataFeed<SlotRecord> {
     }
     return var_names;
   }
-
+  virtual std::vector<std::string> get_input_var_names() {
+    std::vector<std::string> ret;
+    for (int i = 0; i < use_slot_size_; ++i) {
+      ret.push_back(used_slots_info_[i].slot);
+    }
+    return ret;
+  }
 #if defined(PADDLE_WITH_CUDA) && defined(PADDLE_WITH_HETERPS)
   void BuildSlotBatchGPU(const int ins_num, MiniBatchGpuPack* pack);
 

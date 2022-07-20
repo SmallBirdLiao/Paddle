@@ -186,6 +186,8 @@ class PaddingLoDTensorFunctor<phi::CPUContext, T> {
 template <typename T>
 class UnpaddingLoDTensorFunctor<platform::CPUDeviceContext, T> {
  public:
+   const paddle::framework::Scope* scope{nullptr};
+ public:
   void operator()(const platform::CPUDeviceContext& context,
                   const framework::LoDTensor& pad_tensor,
                   framework::LoDTensor* seq_tensor, int pad_seq_len = -1,
@@ -209,6 +211,8 @@ class UnpaddingLoDTensorFunctor<platform::CPUDeviceContext, T> {
 
 template <typename T>
 class UnpaddingLoDTensorFunctor<phi::CPUContext, T> {
+ public:
+  const paddle::framework::Scope* scope{nullptr};
  public:
   void operator()(const phi::CPUContext& context,
                   const framework::LoDTensor& pad_tensor,

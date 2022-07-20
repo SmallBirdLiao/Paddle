@@ -1,3 +1,4 @@
+
 /* Copyright (c) 2016 PaddlePaddle Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -439,6 +440,15 @@ OperatorBase::OperatorBase(const std::string& type,
     GenerateTemporaryNames();
     CheckAllInputOutputSet();
   }
+
+  lxch_time_1 = 0;
+  lxch_time_2 = 0;
+  lxch_time_3 = 0;
+  lxch_time_4 = 0;
+  lxch_time_5 = 0;
+  lxch_time_6 = 0;
+  lxch_time_7 = 0;
+
 }
 
 std::vector<std::string> OperatorBase::InputVars() const {
@@ -1263,6 +1273,7 @@ void OperatorWithKernel::RunImpl(const Scope& scope,
 void OperatorWithKernel::RunImpl(const Scope& scope,
                                  const platform::Place& place,
                                  RuntimeContext* runtime_ctx) const {
+  lxch_time_3 = platform::Timer::lxch_get_base_time();
   platform::DeviceContextPool& pool = platform::DeviceContextPool::Instance();
   auto* dev_ctx = pool.Get(place);
 
@@ -1415,12 +1426,14 @@ void OperatorWithKernel::RunImpl(const Scope& scope,
       }
     }
   }
+  lxch_time_4 = platform::Timer::lxch_get_base_time();
   if (!run_phi_kernel_) {
     if (kernel_type_.get() == nullptr || kernel_func_.get() == nullptr) {
       ChooseKernel(exe_ctx);
       dev_ctx = pool.Get(kernel_type_->place_);
     }
   }
+  lxch_time_5 = platform::Timer::lxch_get_base_time();
 
   // do data transformScope &transfer_scope;
   std::vector<std::string> transfered_inplace_vars;
@@ -1434,6 +1447,7 @@ void OperatorWithKernel::RunImpl(const Scope& scope,
                                    &transfered_inplace_vars, runtime_ctx);
     }
   }
+  lxch_time_6 = platform::Timer::lxch_get_base_time();
   // exec scope is the scope that kernel actually executed on.
   const Scope& exec_scope =
       (transfer_scope == nullptr ? scope : *transfer_scope);
@@ -1449,6 +1463,7 @@ void OperatorWithKernel::RunImpl(const Scope& scope,
   if (FLAGS_enable_unused_var_check) {
     GetThreadLocalUsedVarNameSet()->clear();
   }
+  lxch_time_7 = platform::Timer::lxch_get_base_time();
 
   // TODO(panyx0718): ExecutionContext should only depend on RuntimeContext
   // not Scope. Imperative mode only pass inputs and get outputs.
@@ -1456,18 +1471,6 @@ void OperatorWithKernel::RunImpl(const Scope& scope,
     platform::RecordEvent record_event("compute",
                                        platform::TracerEventType::OperatorInner,
                                        1, platform::EventRole::kInnerOp);
-
-
-    // infershape check
-    // RuntimeInferShapeContext infer_shape_ctx(*this, *runtime_ctx);
-    // std::vector<std::vector<DDim>> pre_dims;
-    // std::vector<std::vector<LoD>> pre_lod;
-    // auto outnames = Outputs();
-    // for (auto& var_name_item : outnames) {
-    //   pre_dims.push_back(infer_shape_ctx.GetOutputsDim(var_name_item.first));
-    //   pre_lod.push_back(infer_shape_ctx.GetOutputsLod(var_name_item.first));
-    // }
-
     if (run_phi_kernel_) {
       phi::KernelContext pt_kernel_context;
       // Do data transform before building KernelContext
@@ -1475,60 +1478,17 @@ void OperatorWithKernel::RunImpl(const Scope& scope,
       PreparePhiData(exec_scope, *pt_kernel_, *pt_kernel_signature_,
                      runtime_ctx);
       BuildPhiKernelContext(*runtime_ctx, dev_ctx, &pt_kernel_context);
+      lxch_time_1 = platform::Timer::lxch_get_base_time();
       (*pt_kernel_)(&pt_kernel_context);
+//      dev_ctx->Wait();
+      lxch_time_2 = platform::Timer::lxch_get_base_time();
     } else {
+      lxch_time_1 = platform::Timer::lxch_get_base_time();
       (*kernel_func_)(
           ExecutionContext(*this, exec_scope, *dev_ctx, *runtime_ctx));
+//      dev_ctx->Wait();
+      lxch_time_2 = platform::Timer::lxch_get_base_time();
     }
-
-    // if (all_kernels_must_compute_runtime_shape_) {
-    //   std::vector<std::vector<DDim>> after_dims;
-    //   std::vector<std::vector<LoD>> after_lod;
-    //   for (auto& var_name_item : outnames) {
-    //     after_dims.push_back(infer_shape_ctx.GetOutputsDim(var_name_item.first));
-    //     after_lod.push_back(infer_shape_ctx.GetOutputsLod(var_name_item.first));
-    //   }
-    //   if (pre_dims.size() != after_dims.size()) {
-    //     CHECK(false) << "dims error: " << Info().Proto().type();
-    //   }
-    //   for (size_t i = 0; i < pre_dims.size(); i++) {
-    //     if (pre_dims[i].size() != after_dims[i].size()) {
-    //       CHECK(false) << "dims error: " << Info().Proto().type();
-    //     }
-    //     for (size_t j = 0; j < pre_dims[i].size(); j++) {
-    //       if (pre_dims[i][j] != after_dims[i][j]) {
-    //         CHECK(false) << "dims error: " << Info().Proto().type();
-    //       }
-    //     }
-    //   }
-    //   if (pre_lod.size() != after_lod.size()) {
-    //     CHECK(false) << "lods error: " << Info().Proto().type();
-    //   }
-    //   for (size_t i = 0; i < pre_lod.size(); i++) {
-    //     if (pre_lod[i].size() != after_lod[i].size()) {
-    //       CHECK(false) << "lods error: " << Info().Proto().type();
-    //     }
-    //     for (size_t j = 0; j < pre_lod[i].size(); j++) {
-    //       auto& a = pre_lod[i][j];
-    //       auto& b = after_lod[i][j];
-    //       if (a.size() != b.size()) {
-    //         CHECK(false) << "lods error: " << Info().Proto().type();
-    //       }
-    //       for (size_t i = 0; i < a.size(); i++) {
-    //         const auto &a_level = a[i];
-    //         const auto &b_level = b[i];
-    //         if (a_level.size() != b_level.size()) {
-    //           CHECK(false) << "lods error: " << Info().Proto().type();
-    //         }
-    //         for (size_t j = 0; j < a_level.size(); j++) {
-    //           if (a_level[j] != b_level[j]) {
-    //             CHECK(false) << "lods error: " << Info().Proto().type();
-    //           }
-    //         }
-    //       }
-    //     }
-    //   }
-    // }
   }
 
   if (!transfered_inplace_vars.empty()) {
@@ -1561,7 +1521,7 @@ void OperatorWithKernel::RunImpl(const Scope& scope,
   }
 
   if (FLAGS_check_nan_inf) {
-    framework::details::CheckOpHasNanOrInf(*this, exec_scope, place);
+//    framework::details::CheckOpHasNanOrInf(*this, exec_scope, place);
   }
 
   // To solve issue #15032, have a discussion with @Luotao for cpu inference,

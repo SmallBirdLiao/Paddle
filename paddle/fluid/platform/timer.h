@@ -46,6 +46,13 @@ class Timer {
   double ElapsedMS();
   // return elapsed time in sec
   double ElapsedSec();
+  static uint64_t lxch_get_base_time() {
+    struct timeval tmp;
+    gettimeofday(&tmp, NULL);
+    uint64_t ret = tmp.tv_sec;
+    ret = ret * 1000 * 1000L + tmp.tv_usec;
+    return ret;
+  }
 
  private:
   struct timeval _start;

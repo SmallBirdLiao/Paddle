@@ -59,6 +59,9 @@ static const std::unordered_map<std::string, int>& role_str2int() {
 static std::unordered_set<std::string>& op_type_nan_inf_white_list() {
   static std::unordered_set<std::string> _op_type_nan_inf_white_list = {
       "coalesce_tensor", /* This Op will alloc tensor, and may not init space */
+      "c_sync_calc_stream",
+      "c_allreduce_sum",
+      "c_sync_comm_stream",
   };
   return _op_type_nan_inf_white_list;
 }

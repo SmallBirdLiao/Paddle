@@ -17,6 +17,7 @@ limitations under the License. */
 #include <algorithm>
 #include <vector>
 #include "paddle/fluid/framework/lod_tensor.h"
+#include "paddle/fluid/framework/scope.h"
 #include "paddle/fluid/platform/device_context.h"
 
 namespace paddle {
@@ -118,6 +119,8 @@ class UnpaddingLoDTensorFunctor {
                   framework::LoDTensor* seq_tensor, int pad_seq_len = -1,
                   int lod_level = 0, bool norm_by_times = false,
                   const PadLayout layout = kBatchLengthWidth);
+ public:
+    const paddle::framework::Scope* scope{nullptr};
 };
 
 }  // namespace math

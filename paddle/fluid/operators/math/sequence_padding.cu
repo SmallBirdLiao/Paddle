@@ -179,6 +179,8 @@ class PaddingLoDTensorFunctor<phi::GPUContext, T> {
 template <typename T>
 class UnpaddingLoDTensorFunctor<platform::CUDADeviceContext, T> {
  public:
+   const paddle::framework::Scope* scope{nullptr};
+ public:
   void operator()(const platform::CUDADeviceContext& context,
                   const framework::LoDTensor& pad_tensor,
                   framework::LoDTensor* seq_tensor, int pad_seq_len = -1,
@@ -221,17 +223,29 @@ class UnpaddingLoDTensorFunctor<platform::CUDADeviceContext, T> {
 
     const T* pad_data = pad_tensor.data<T>();
     T* seq_data = seq_tensor->data<T>();
-
+    
+    auto& child_scope = scope->NewScope();
+    auto var = child_scope.Var("lxch_pad_tmp_1");
+    paddle::framework::LxchPinnedVector* pin_ptr = var->GetMutable<paddle::framework::LxchPinnedVector>();
+    pin_ptr->init(seq_offsets.data(), seq_offsets.size() * sizeof(size_t), context.stream(), context.GetPlace());
+    SequencePaddingKernel<T, kPadToSeq><<<grid, threads, 0, context.stream()>>>(
+        seq_data, pad_data, nullptr, false,
+        pin_ptr->get_gpu_ptr<size_t>(), seq_num, pad_seq_len,
+        step_width, norm_by_times, layout);
+    /*
     paddle::framework::MixVector<size_t> mixv_seq_offsets(&seq_offsets);
     SequencePaddingKernel<T, kPadToSeq><<<grid, threads, 0, context.stream()>>>(
         seq_data, pad_data, nullptr, false,
         mixv_seq_offsets.CUDAData(context.GetPlace()), seq_num, pad_seq_len,
         step_width, norm_by_times, layout);
+    */
   }
 };
 
 template <typename T>
 class UnpaddingLoDTensorFunctor<phi::GPUContext, T> {
+ public:
+  const paddle::framework::Scope* scope{nullptr};
  public:
   void operator()(const phi::GPUContext& context,
                   const framework::LoDTensor& pad_tensor,
