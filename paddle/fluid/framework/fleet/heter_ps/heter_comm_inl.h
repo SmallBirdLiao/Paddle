@@ -1973,6 +1973,7 @@ void HeterComm<KeyType, ValType, GradType>::push_sparse(int gpu_num,
                                                         GradType* d_grads,
                                                         size_t len,
                                                         Sgd& sgd) {  // NOLINT
+  lxch_barrir();
   auto lxch_step_3 = platform::Timer::lxch_get_base_time();
   if (lxch_run_flag_ == 1 || lxch_run_flag_ == 2) {
     lxch_push_sparse(gpu_num, d_keys, d_grads, len, sgd);
