@@ -36,6 +36,45 @@ struct DyGpuValue {
   friend std::ostream& operator<<(std::ostream& out, DyGpuValue& val) {
     return out;
   }
+  __host__ bool is_equal_element(float a, float b) {
+    if (a == b) return true;
+    float max = fabs(a) > fabs(b) ? fabs(a) : fabs(b);
+    if (max == 0)  max += 0.000001;
+    float gap = fabs(a - b);
+    if (max < 0.00000001) {
+      if (gap > max) {
+        return false;
+      } 
+    } else if (max < 0.000001) {
+      if (gap / max > 0.05) {
+        return false;
+      }
+    } else if (max < 0.0001) {
+      if (gap / max > 0.01) {
+        return false;
+      }
+    } else {
+      if (gap / max > 0.001) {
+        return false;
+      }
+    }
+    return true;
+  }
+  __host__ bool is_equal(const DyGpuValue& input) {
+    if (!is_equal_element(delta_score, input.delta_score)) return false;
+    if (!is_equal_element(show, input.show)) return false;
+    if (!is_equal_element(clk, input.clk)) return false;
+    if (!is_equal_element(slot, input.slot)) return false;
+    if (!is_equal_element(lr, input.lr)) return false;
+    if (!is_equal_element(lr_g2sum, input.lr_g2sum)) return false;
+    if (!is_equal_element(mf_size, input.mf_size)) return false;
+    if (!is_equal_element(mf_dim, input.mf_dim)) return false;
+    if (!is_equal_element(cpu_ptr, input.cpu_ptr)) return false;
+    for (int i = 0; i < mf_dim + 1; i++) {
+      if (!is_equal_element(mf[i], input.mf[i])) return false;
+    }
+    return true;
+  }
   __host__ __device__ __forceinline__ DyGpuValue() {
     delta_score = 0;
     show = 0;
@@ -57,6 +96,28 @@ struct DyGpuValue {
     mf_size = in.mf_size;
     mf_dim = in.mf_dim;
     cpu_ptr = in.cpu_ptr;
+    if (in.mf_dim > 64) {
+      printf("lxchtestaa  %d\n", in.mf_dim);
+      return;
+    }
+    for (int i = 0; i < mf_dim + 1; i++) {
+      mf[i] = in.mf[i];
+    }
+  }
+  __device__ __forceinline__ void lxch_equal(const DyGpuValue& in) {
+    delta_score = in.delta_score;
+    show = in.show;
+    clk = in.clk;
+    slot = in.slot;
+    lr = in.lr;
+    lr_g2sum = in.lr_g2sum;
+    mf_size = in.mf_size;
+    mf_dim = in.mf_dim;
+    cpu_ptr = in.cpu_ptr;
+    if (in.mf_dim > 64) {
+      printf("lxchtestff  %d\n", in.mf_dim);
+      return;
+    }
     for (int i = 0; i < mf_dim + 1; i++) {
       mf[i] = in.mf[i];
     }
@@ -84,6 +145,41 @@ struct DyGpuPushValue {
   float lr_g;
   int mf_dim;
   float mf_g[0];
+  __host__ bool is_equal_element(float a, float b) {
+    if (a == b) return true;
+    float max = fabs(a) > fabs(b) ? fabs(a) : fabs(b);
+    if (max == 0)  max += 0.000001;
+    float gap = fabs(a - b);
+    if (max < 0.00000001) {
+      if (gap > max) {
+        return false;
+      } 
+    } else if (max < 0.000001) {
+      if (gap / max > 0.1) {
+        return false;
+      }
+    } else if (max < 0.0001) {
+      if (gap / max > 0.01) {
+        return false;
+      }
+    } else {
+      if (gap / max > 0.001) {
+        return false;
+      }
+    }
+    return true;
+  }
+  __host__ bool is_equal(const DyGpuPushValue& input) {
+    if (!is_equal_element(show, input.show)) return false;
+    if (!is_equal_element(clk, input.clk)) return false;
+    if (!is_equal_element(slot, input.slot)) return false;
+    if (!is_equal_element(lr_g, input.lr_g)) return false;
+    if (!is_equal_element(mf_dim, input.mf_dim)) return false;
+    for (int i = 0; i < mf_dim; i++) {
+      if (!is_equal_element(mf_g[i], input.mf_g[i])) return false;
+    }
+    return true;
+  }
   __device__ __forceinline__ void from_grad(const float* grad, int dim, int slot_id, int batch_size) {
     this->slot = slot_id;
     this->mf_dim = dim;
@@ -94,7 +190,7 @@ struct DyGpuPushValue {
       this->mf_g[j] = grad[3 + j] * -1. * batch_size;
     }
   }
-  __device__ __forceinline__ DyGpuPushValue& operator+=(const DyGpuPushValue& input) {
+  __device__ __host__ __forceinline__ DyGpuPushValue& operator+=(const DyGpuPushValue& input) {
     show += input.show;
     clk += input.clk;
     lr_g += input.lr_g;
@@ -103,7 +199,7 @@ struct DyGpuPushValue {
     }
     return *this;
   }
-  __device__ __forceinline__ void operator=(const DyGpuPushValue& input) {
+  __device__ __host__ __forceinline__ void operator=(const DyGpuPushValue& input) {
     show = input.show;
     clk = input.clk;
     slot = input.slot;
@@ -171,6 +267,11 @@ class Optimizer<DyGpuValue, DyGpuPushValue> {
                        optimizer_config::clk_coeff * grad.clk;
 
     update_lr(ptr->lr, ptr->lr_g2sum, grad.lr_g, grad.show);
+    
+    if (ptr->mf_dim > 64) {
+      printf("lxchtestbb  %d\n", ptr->mf_dim);
+      return;
+    }
 
     if (ptr->mf_size == 0) {
       if (optimizer_config::mf_create_thresholds <=

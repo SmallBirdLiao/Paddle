@@ -36,6 +36,13 @@ limitations under the License. */
 namespace paddle {
 namespace framework {
 
+struct revert_info {
+  uint32_t offset;
+  uint32_t len;
+  uint64_t key;
+  void* value_ptr;
+};
+
 template <typename KeyType, typename ValType>
 class TableContainer
     : public concurrent_unordered_map<KeyType, ValType,
@@ -61,6 +68,7 @@ class HashTable {
   void get(const KeyType* d_keys, ValType* d_vals, size_t len,
            gpuStream_t stream);
   void get(gpuStream_t stream, const KeyType* d_keys, ValType d_vals, size_t len);
+  void get(gpuStream_t stream, revert_info* d_keys, ValType d_vals, size_t len, int table_id);
   void show();
   void dump_to_cpu(int devid, cudaStream_t stream);
 
@@ -71,6 +79,10 @@ class HashTable {
   template <typename GradType, typename Sgd>
   void update(const KeyType* d_keys, const GradType* d_grads, size_t len, gpuStream_t stream,
               Sgd sgd);
+  
+  template <typename GradType, typename Sgd>
+  void update(revert_info* d_keys, const GradType* d_grads, size_t len, gpuStream_t stream,
+              Sgd sgd, int dev_id);
 
   int size() { return container_->size(); }
 
@@ -87,7 +99,7 @@ class HashTable {
  private:
   TableContainer<KeyType, ValType>* container_;
   int BLOCK_SIZE_{256};
-  float LOAD_FACTOR{0.75f};
+  float LOAD_FACTOR{0.25f};
   size_t capacity_;
   size_t max_mf_dim_ = 8;
   size_t pull_feature_value_size_;

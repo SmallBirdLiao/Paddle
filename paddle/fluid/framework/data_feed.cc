@@ -27,6 +27,7 @@ limitations under the License. */
 #include "io/fs.h"
 #include "paddle/fluid/platform/monitor.h"
 #include "paddle/fluid/platform/timer.h"
+#include "paddle/fluid/framework/fleet/heter_ps/mem_pool.h"
 
 USE_INT_STAT(STAT_total_feasign_num_in_mem);
 DECLARE_bool(enable_ins_parser_file);
@@ -2609,11 +2610,14 @@ bool SlotRecordInMemoryDataFeed::Start() {
   CHECK(paddle::platform::is_gpu_place(this->place_));
 
   for (int i = 0; i < pack_thread_num_ + 1; i++) {
-    auto pack = BatchGpuPackMgr().get(this->GetPlace(), used_slots_info_);
+    auto pack = BatchGpuPackMgr().get(this->GetPlace(), used_slots_info_, default_batch_size_);
     pack_vec_.push_back(pack);
     free_pack_queue_.Push(pack);
   }
 
+  //处理过程最好不要改变顺序
+
+  pack_push_index_.store(0);
   pack_offset_index_.store(0);
   pack_is_end_.store(false);
   thread_count_.store(pack_thread_num_);
@@ -2638,7 +2642,14 @@ bool SlotRecordInMemoryDataFeed::Start() {
         paddle::platform::SetDeviceId(place_.GetDeviceId());
         pack->pack_instance(&records_[offset], batch_size);
         this->BuildSlotBatchGPU(batch_size, pack);
+        while (pack_push_index_.load() != offset_index) {
+            std::this_thread::sleep_for(
+              std::chrono::microseconds(1));
+        }
+//        VLOG(0) << "lxchinfoc  " << (uint64_t)(pack);
         using_pack_queue_.Push(pack);
+//        VLOG(0) << "lxchinfoa  " << (uint64_t)(pack);
+        pack_push_index_.fetch_add(1);
       }
     }));
   }
@@ -2709,7 +2720,7 @@ void SlotRecordInMemoryDataFeed::BuildSlotBatchGPU(const int ins_num, MiniBatchG
                         slot_total_num * sizeof(size_t),
                         cudaMemcpyDeviceToHost, pack->get_stream()));
 
-  cudaStreamSynchronize(pack->get_stream());
+  CUDA_CHECK(cudaStreamSynchronize(pack->get_stream()));
 
   int64_t float_offset = 0;
   int64_t uint64_offset = 0;
@@ -2759,7 +2770,18 @@ void SlotRecordInMemoryDataFeed::BuildSlotBatchGPU(const int ins_num, MiniBatchG
   CUDA_CHECK(cudaMemcpyAsync(dest_gpu_p, h_tensor_ptrs.data(),
                         use_slot_size_ * sizeof(void*),
                         cudaMemcpyHostToDevice, pack->get_stream()));
+  
+  /*
+  uint64_t* lxch_aa = new uint64_t[uint64_tensor.numel()];
+  size_t lxch_len = uint64_tensor.numel();
+  for (size_t i = 0; i < lxch_len; i++) {
+    lxch_aa[i] = 10000000 + i;
+  }
+  cudaMemcpy(uint64_tensor.data(), lxch_aa, lxch_len * sizeof(uint64_t), cudaMemcpyHostToDevice);
+  delete []lxch_aa;
+  */
 
+//  auto lxch_step_1 = platform::Timer::lxch_get_base_time();
   CopyForTensor(ins_num, use_slot_size_, dest_gpu_p,
                 (const size_t*)pack->gpu_slot_offsets(),
                 (const uint64_t*)value.d_uint64_keys.data(),
@@ -2769,6 +2791,27 @@ void SlotRecordInMemoryDataFeed::BuildSlotBatchGPU(const int ins_num, MiniBatchG
                 (const int*)value.d_float_offset.data(),
                 (const int*)value.d_float_lens.data(), float_use_slot_size_,
                 used_slot_gpu_types, pack->get_stream());
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    VLOG(0) << "lxcheeinfo  " <<  cudaGetErrorString(err);
+//    abort();
+  }
+//  auto lxch_step_2 = platform::Timer::lxch_get_base_time();
+//  VLOG(0) << "lxchddinfo  " << (uint64_t)(pack->batch_ins_) << "  " << lxch_step_2 - lxch_step_1;
+  
+  /*
+  auto lxch_tmp = memory::Alloc(phi::GPUPinnedPlace(), uint64_tensor.numel() * sizeof(uint64_t));
+  cudaMemcpy((void*)lxch_tmp->ptr(), uint64_tensor.data(), uint64_tensor.numel() * sizeof(uint64_t), cudaMemcpyDeviceToHost);
+  uint64_t* lxch_tmp_1 = (uint64_t*)(lxch_tmp->ptr());
+  for (int64_t jjj = 0; jjj < uint64_tensor.numel(); jjj++) {
+    if (LxchDebug::get_ins()->lxch_test_set.find(lxch_tmp_1[jjj]) == LxchDebug::get_ins()->lxch_test_set.end()) {
+      if (lxch_tmp_1[jjj] >= 1000000) {
+        VLOG(0) << "lxchdebughhhhh  " << lxch_tmp_1[jjj] << "  " << jjj;
+      }
+    }
+  }
+  VLOG(0) << "lxchinfo checkall " << (uint64_t)(uint64_tensor.data()) << "  " << uint64_tensor.numel();
+  */
 }
 
 void SlotRecordInMemoryDataFeed::PackToScope(MiniBatchGpuPack* pack, const Scope* scope) {
@@ -2839,6 +2882,83 @@ void SlotRecordInMemoryDataFeed::PackToScope(MiniBatchGpuPack* pack, const Scope
              offset_cols_size * sizeof(size_t));
     }
   }
+
+  /*
+  VLOG(0) << "lxchinfob  " << (uint64_t)(pack);
+  bool lxch_flag = false;
+  for (int j = 0; j < use_slot_size_; ++j) {
+    auto& feed = (*feed_vec)[j];
+    if (feed == nullptr) {
+      continue;
+    }
+    auto& info = used_slots_info_[j];
+    if (feed->numel() <= 200) {
+      continue;
+    }
+
+    if (info.type[0] == 'u') {  // uint64
+      auto lxch_tmp = memory::Alloc(phi::GPUPinnedPlace(), feed->numel() * sizeof(uint64_t));
+      cudaMemcpyAsync((void*)lxch_tmp->ptr(), feed->data(), feed->numel() * sizeof(uint64_t), cudaMemcpyDeviceToHost, pack->get_stream());
+      CUDA_CHECK(cudaStreamSynchronize(pack->get_stream()));
+      uint64_t* lxch_tmp_1 = (uint64_t*)(lxch_tmp->ptr());
+      int64_t lxch_len = feed->numel();
+      for (int64_t jjj = 0; jjj < lxch_len; jjj++) {
+        if (LxchDebug::get_ins()->lxch_test_set.find(lxch_tmp_1[jjj]) == LxchDebug::get_ins()->lxch_test_set.end()) {
+          if (lxch_tmp_1[jjj] >= 1000000) {
+            VLOG(0) << "lxchdebugiiii  " << lxch_tmp_1[jjj] << "  " << jjj << "  " << (uint64_t)(pack);
+            lxch_flag = true;
+          }
+        }
+      }
+      VLOG(0) << "lxchinfo checklod " << (uint64_t)(feed->data()) << "  " << feed->numel();
+    }
+  }
+
+  if (lxch_flag) {
+    //打印cpu中的数据
+    auto& cpu_buf = pack->buf_.h_uint64_keys;
+    for (size_t i = 0; i < cpu_buf.size(); i++) {
+      if (cpu_buf[i] < 1000000) {
+        continue;
+      }
+      VLOG(0) << "lxchaainfo  " << cpu_buf[i] << "  " << i;
+      if (LxchDebug::get_ins()->lxch_test_set.find(cpu_buf[i]) == LxchDebug::get_ins()->lxch_test_set.end()) {
+        VLOG(0) << "lxchaabug  " << cpu_buf[i] << "  " << i;
+      }
+    }
+    //打印gpu中的
+    auto lxch_tmp = memory::Alloc(phi::GPUPinnedPlace(), pack->value_.d_uint64_keys.size() * sizeof(uint64_t));
+    cudaMemcpyAsync((void*)lxch_tmp->ptr(), pack->value_.d_uint64_keys.data(), pack->value_.d_uint64_keys.size() * sizeof(uint64_t), cudaMemcpyDeviceToHost, pack->get_stream());
+    CUDA_CHECK(cudaStreamSynchronize(pack->get_stream()));
+    uint64_t* lxch_tmp_1 = (uint64_t*)(lxch_tmp->ptr());
+    for (size_t jjj = 0; jjj < pack->value_.d_uint64_keys.size(); jjj++) {
+      if (lxch_tmp_1[jjj] < 1000000) {
+        continue;
+      }
+      VLOG(0) << "lxchbbinfo  " << lxch_tmp_1[jjj] << "  " << jjj;
+      if (LxchDebug::get_ins()->lxch_test_set.find(lxch_tmp_1[jjj]) == LxchDebug::get_ins()->lxch_test_set.end()) {
+        VLOG(0) << "lxchbbbug  " << lxch_tmp_1[jjj] << "  " << jjj;
+      }
+    }
+
+    //打印tensor
+    lxch_tmp = memory::Alloc(phi::GPUPinnedPlace(), uint64_tensor.numel() * sizeof(uint64_t));
+    cudaMemcpyAsync((void*)lxch_tmp->ptr(), uint64_tensor.data(), uint64_tensor.numel() * sizeof(uint64_t), cudaMemcpyDeviceToHost, pack->get_stream());
+    CUDA_CHECK(cudaStreamSynchronize(pack->get_stream()));
+    lxch_tmp_1 = (uint64_t*)(lxch_tmp->ptr());
+    for (int64_t jjj = 0; jjj < uint64_tensor.numel(); jjj++) {
+      if (lxch_tmp_1[jjj] < 1000000) {
+        continue;
+      }
+      VLOG(0) << "lxchccinfo  " << lxch_tmp_1[jjj] << "  " << jjj;
+      if (LxchDebug::get_ins()->lxch_test_set.find(lxch_tmp_1[jjj]) == LxchDebug::get_ins()->lxch_test_set.end()) {
+          VLOG(0) << "lxchccbug  " << lxch_tmp_1[jjj] << "  " << jjj;
+      }
+    }
+    sleep(1000);
+    abort();
+  }
+  */
 }
 
 MiniBatchGpuPack* SlotRecordInMemoryDataFeed::get_pack(MiniBatchGpuPack* last_pack) {
@@ -2866,7 +2986,8 @@ MiniBatchGpuPack* SlotRecordInMemoryDataFeed::get_pack(MiniBatchGpuPack* last_pa
 
 
 MiniBatchGpuPack::MiniBatchGpuPack(const paddle::platform::Place& place,
-                                   const std::vector<UsedSlotInfo>& infos) {
+                                   const std::vector<UsedSlotInfo>& infos,
+                                   size_t batch_size) {
   place_ = place;
   stream_holder_.reset(new platform::stream::CUDAStream(place));
   stream_ = stream_holder_->raw_stream();
@@ -2889,7 +3010,9 @@ MiniBatchGpuPack::MiniBatchGpuPack(const paddle::platform::Place& place,
   }
   copy_host2device(&gpu_slots_, gpu_used_slots_.data(), gpu_used_slots_.size());
 
-  slot_buf_ptr_ = memory::AllocShared(place_, used_slot_size_ * sizeof(void*));
+//lxch
+  slot_buf_ptr_.resize(used_slot_size_);
+//  slot_buf_ptr_ = memory::AllocShared(place_, used_slot_size_ * sizeof(void*));
 
   int device_id = place_.GetDeviceId();
   VLOG(3) << "begin get batch pack device id: " << device_id;
@@ -2897,6 +3020,9 @@ MiniBatchGpuPack::MiniBatchGpuPack(const paddle::platform::Place& place,
   CUDA_CHECK(cudaStreamSynchronize(stream_));
   float_tensor_vec_.resize(used_slot_size_);
   uint64_tensor_vec_.resize(used_slot_size_);
+
+  uint64_tensor_.mutable_data<int64_t>({int(batch_size * 10000), 1}, place_);
+  float_tensor_.mutable_data<float>({int(batch_size * 10000), 1}, place_);
 }
 
 MiniBatchGpuPack::~MiniBatchGpuPack() {}
@@ -2953,6 +3079,16 @@ void MiniBatchGpuPack::pack_all_data(const SlotRecord* ins_vec, int num) {
     if (fea_num > 0) {
       memcpy(&buf_.h_uint64_keys[uint64_total_num],
              uint64_feasigns.slot_values.data(), fea_num * sizeof(uint64_t));
+      /*
+      for (size_t ii = 0; ii < uint64_feasigns.slot_values.size(); ii++) {
+        if (LxchDebug::get_ins()->lxch_test_set.find(uint64_feasigns.slot_values[ii]) == LxchDebug::get_ins()->lxch_test_set.end()) {
+          if (uint64_feasigns.slot_values[ii] > 100000) {
+            VLOG(0) << "lxchdebugbbbbb  " << uint64_feasigns.slot_values[ii];
+          }
+        }
+      }
+      */
+      
     }
     uint64_total_num += fea_num;
     // copy uint64 offset

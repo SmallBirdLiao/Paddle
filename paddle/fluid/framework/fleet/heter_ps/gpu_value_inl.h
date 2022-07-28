@@ -35,6 +35,10 @@ struct GpuValue {
   friend std::ostream& operator<<(std::ostream& out, GpuValue& val) {
     return out;
   }
+  
+  __host__ bool is_equal(const GpuValue& input) {
+    return true;
+  }
   __host__ __device__ __forceinline__ GpuValue() {
     delta_score = 0;
     show = 0;
@@ -58,6 +62,8 @@ struct GpuValue {
       mf[i] = in.mf[i];
     }
   }
+  __device__ __forceinline__ void lxch_equal(const GpuValue& in) {
+  }
   __device__ __forceinline__ void to_cvm(float* des, int dim) {
     des[0] = show;
     des[1] = clk;
@@ -80,6 +86,9 @@ struct GpuPushValue {
   int slot;
   float lr_g;
   float mf_g[8];
+  __host__ bool is_equal(const GpuPushValue& input) {
+    return true;
+  }
   __device__ __forceinline__ void from_grad(const float* grad, int dim, int slot_id, int batch_size) {
     this->slot = slot_id;
     this->show = grad[0];

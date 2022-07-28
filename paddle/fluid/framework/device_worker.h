@@ -545,13 +545,13 @@ class PSGPUWorker : public HogwildWorker {
   // async infershape
   virtual void CreateDeviceResource(const ProgramDesc& main_prog);
   virtual void BindingDataFeedMemory();
-
  protected:
   void PushGradients();
   void CopySparseTable();
   void CopyDenseTable();
   void CopyDenseVars();
   void PrepareCudaGraph();
+  void BuildVarShared();
 
   struct InferShapeCheckData {
     std::vector<std::vector<DDim>> pre_dims;
@@ -562,7 +562,9 @@ class PSGPUWorker : public HogwildWorker {
 
   int OpRunAndShapeCheck(OperatorBase& op,
                           const Scope& scope,
-                          const platform::Place& place);
+                          const platform::Place& place,
+                          size_t op_index = 0,
+                          size_t batch_index = 0);
  private:
   int mpi_rank_;
   std::mutex mutex_;
@@ -634,7 +636,11 @@ class PSGPUWorker : public HogwildWorker {
   uint64_t total_inst_;
 
   // async infershape
-  int task_threads_num_ {6};
+  bool build_var_shared_ {true};
+  std::set<std::string> build_var_shared_set_;
+  std::map<size_t, std::vector<std::string>> build_var_shared_map_;
+  std::set<std::string> build_var_shared_in_shared_;
+  int task_threads_num_ {0};
   int scope_num_ {task_threads_num_ + 1};
   std::atomic<int> thread_count_ {0};
   std::atomic<bool> stop_token_ {false};

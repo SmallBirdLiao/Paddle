@@ -312,6 +312,7 @@ static int compute_thread_batch_nccl(
     return thread_avg_batch_num;
   }
 
+
   auto& offset = (*nccl_offsets);
   // split data avg by thread num
   compute_batch_num(total_instance_num, minibatch_size, thr_num, &offset);
@@ -1746,6 +1747,32 @@ void SlotRecordDataset::PrepareTrain() {
       VLOG(3) << "read from channel to records with records size: "
               << input_records_.size();
     }
+    //先排序
+    auto lxch_step_1 = paddle::platform::Timer::lxch_get_base_time();
+    if (LXCH_SWITCH) {
+      std::map<size_t, std::vector<SlotRecord>> shard_map;
+      for (size_t i = 0; i < input_records_.size(); i++) {
+        size_t len = this->input_records_[i]->slot_uint64_feasigns_.slot_values.size();
+        shard_map[len].push_back(input_records_[i]);
+      }
+      input_records_.clear();
+      for (auto iter = shard_map.rbegin(); iter != shard_map.rend(); iter++) {
+        input_records_.insert(input_records_.end(), iter->second.begin(), iter->second.end());
+      }
+      /*
+      std::sort(input_records_.begin(), input_records_.end(), [](const SlotRecord& l, const SlotRecord& r) -> bool {
+        return l->slot_uint64_feasigns_.slot_values.size() > r->slot_uint64_feasigns_.slot_values.size();
+      });
+      */
+    }
+    auto lxch_step_2 = paddle::platform::Timer::lxch_get_base_time();
+    /*
+    if (LXCH_SWITCH) {
+      for (size_t i = 0; i < input_records_.size(); i++) {
+        VLOG(0) << "lxchdebuge " << input_records_[i]->slot_uint64_feasigns_.slot_values.size();
+      }
+    }
+    */
     VLOG(3) << "input records size: " << input_records_.size();
     int64_t total_ins_num = input_records_.size();
     std::vector<std::pair<int, int>> offset;
@@ -1762,11 +1789,66 @@ void SlotRecordDataset::PrepareTrain() {
       reinterpret_cast<SlotRecordInMemoryDataFeed*>(readers_[i].get())
           ->SetRecord(&input_records_[0]);
     }
+    //在来一次shuffer操作
+#ifdef PADDLE_WITH_PSCORE
+    auto fleet_ptr = distributed::FleetWrapper::GetInstance();
+#else
+    auto fleet_ptr = framework::FleetWrapper::GetInstance();
+#endif
+    auto lxch_step_3 = paddle::platform::Timer::lxch_get_base_time();
+    if (LXCH_SWITCH) {
+      //tips1: 最大的那个序列放在最前面，避免显存反复分配
+      //tips2: 不同卡在同一个batch轮次内，处理的序列长度应该是一致的
+      //tips3: 同样为了避免反复分配，第一个batch，让所有的卡多训一次
+      static int load_data_pass = 0;
+
+      std::vector<std::pair<int, int>> offset_back;
+      offset_back.reserve(offset.size() + thread_num_);
+      for (size_t i = 0; i < offset.size(); i++) {
+        if (i == 0 && load_data_pass == 0) {
+          for (int j = 0; j < thread_num_ + 1; j++) {
+            offset_back.push_back(offset[i]);
+          }
+        } else {
+          offset_back.push_back(offset[i]);
+        }
+      }
+
+      load_data_pass++;
+
+      //step2 做shuffer，保证第一个batch不动
+      std::vector<size_t> src_idxs;
+      src_idxs.reserve(offset_back.size() / thread_num_);
+      for (size_t i = 0; i < offset_back.size(); i += thread_num_) {
+        src_idxs.push_back(i);
+      }
+      std::shuffle(src_idxs.begin() + 1 , src_idxs.end(), fleet_ptr->LocalRandomEngine());
+
+      //step3 回填
+      offset.clear();
+      offset.reserve(offset_back.size());
+      for (size_t i = 0; i < src_idxs.size(); i++) {
+        for (int j = 0; j < thread_num_; j++) {
+          offset.push_back(offset_back[src_idxs[i]+j]);
+        }
+      }
+    }
+    auto lxch_step_4 = paddle::platform::Timer::lxch_get_base_time();
+    VLOG(0) << "lxch shuffer time is" << lxch_step_4 - lxch_step_3 + lxch_step_2 - lxch_step_1;
     for (size_t i = 0; i < offset.size(); i++) {
       reinterpret_cast<SlotRecordInMemoryDataFeed*>(
           readers_[i % thread_num_].get())
           ->AddBatchOffset(offset[i]);
     }
+    
+    /*
+    if (LXCH_SWITCH) {
+      for (size_t i = 0; i < offset.size(); i++) {
+        VLOG(0) << "lxchdebugd " << i  << "  " << offset[i].first << "  " << offset[i].second;
+      }
+    }
+    */
+    
   }
 #else
   PADDLE_THROW(platform::errors::Unavailable(

@@ -149,12 +149,27 @@ class CVMGradCUDAKernel : public framework::OpKernel<T> {
           batch_size, lod[lod.size() - 1],
           platform::errors::PreconditionNotMet(
               "Output(X@GRAD)'s dim[0] must be equal to last element of lod"));
+
+      auto& child_scope = context.scope().NewScope();
+      std::string uniq_key = "lxch_tmp_cvm_grad_";
+      uniq_key.append(std::to_string((uint64_t)dx_data));
+      auto var = child_scope.Var(uniq_key);
+      paddle::framework::LxchPinnedVector* pin_ptr = var->GetMutable<paddle::framework::LxchPinnedVector>();
+      pin_ptr->init(lod.data(), lod.size() * sizeof(size_t), stream, context.GetPlace());
+      CvmGradComputeKernel<<<(dx_numel + PADDLE_CUDA_NUM_THREADS - 1) /
+                                 PADDLE_CUDA_NUM_THREADS,
+                             PADDLE_CUDA_NUM_THREADS, 0, stream>>>(
+          use_cvm, item_size, cvm_data, dout_data, dx_data, true,
+          pin_ptr->get_gpu_ptr<size_t>(), lod.size(), dx_numel);
+//      cudaStreamSynchronize(stream);
+/*
       paddle::framework::MixVector<size_t> mixv_lod(&lod);
       CvmGradComputeKernel<<<(dx_numel + PADDLE_CUDA_NUM_THREADS - 1) /
                                  PADDLE_CUDA_NUM_THREADS,
                              PADDLE_CUDA_NUM_THREADS, 0, stream>>>(
           use_cvm, item_size, cvm_data, dout_data, dx_data, true,
           mixv_lod.CUDAData(context.GetPlace()), lod.size(), dx_numel);
+*/
     }
   }
 };

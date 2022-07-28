@@ -77,7 +77,7 @@ void SlotRecordInMemoryDataFeed::FillSlotValueOffset(
                               stream>>>(
       ins_num, used_slot_num, slot_value_offsets, uint64_offsets,
       uint64_slot_size, float_offsets, float_slot_size, used_slots);
-  cudaStreamSynchronize(stream);
+  CUDA_CHECK(cudaStreamSynchronize(stream));
 }
 
 __global__ void CopyForTensorKernel(
@@ -121,6 +121,16 @@ __global__ void CopyForTensorKernel(
   }
 }
 
+/*
+ins_num: ins数量
+used_slot_num: slot数量
+dest: 每个slot对应的要填的数据的起始地址
+slot_value_offsets: slot1(ins1里面的数量、ins2里面的数量)  slot2， 大小为slot_size * (ins + 1)
+uint64_feas: 具体的feasign
+uint64_offsets: 偏移量，ins(slot1起始位置， slot2位置)  ins  ins， 大小为ins*(slot_size + 1)
+uint64_ins_lens: 长度是ins+1, 对应每个ins的长度，同时还有偏移量
+uint64_slot_size: 一共有多少个slot()
+*/
 void SlotRecordInMemoryDataFeed::CopyForTensor(
     const int ins_num, const int used_slot_num, void **dest,
     const size_t *slot_value_offsets, const uint64_t *uint64_feas,
@@ -134,7 +144,12 @@ void SlotRecordInMemoryDataFeed::CopyForTensor(
       used_slot_num, ins_num, dest, slot_value_offsets, uint64_feas,
       uint64_offsets, uint64_ins_lens, uint64_slot_size, float_feas,
       float_offsets, float_ins_lens, float_slot_size, used_slots);
-  cudaStreamSynchronize(stream);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    VLOG(0) << "lxcheeinfo  " <<  cudaGetErrorString(err);
+//    abort();
+  }
+  CUDA_CHECK(cudaStreamSynchronize(stream));
 }
 
 }  // namespace framework

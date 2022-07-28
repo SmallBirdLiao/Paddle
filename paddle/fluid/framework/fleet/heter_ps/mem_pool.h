@@ -23,6 +23,17 @@ limitations under the License. */
 namespace paddle {
 namespace framework {
 
+class LxchDebug {
+public:
+  static LxchDebug* get_ins() {
+    static LxchDebug aa;
+    return &aa;
+  }
+public:
+  std::set<uint64_t> lxch_test_set;
+};
+
+
 class MemoryPool {
  public:
   MemoryPool(size_t capacity, size_t block_size)

@@ -39,6 +39,17 @@ std::atomic<bool> PSGPUWorker::shape_check_flag_(false);
 
 void PSGPUWorker::CreateDeviceResource(const ProgramDesc& main_prog) {
   this->HogwildWorker::CreateDeviceResource(main_prog);
+
+  if (build_var_shared_) {
+    auto& block = main_prog.Block(0);
+    for (auto& var : block.AllVars()) {
+      std::string name = var->Name();
+      if (!var->Persistable()) {
+        build_var_shared_set_.insert(name);
+      }
+    }
+  }
+
   if (scope_num_ != 1) {
     auto& block = main_prog.Block(0);
     for (int i = 0; i < scope_num_; i++) {
@@ -54,8 +65,47 @@ void PSGPUWorker::CreateDeviceResource(const ProgramDesc& main_prog) {
         }
       }
     }
+
     for (auto& op : ops_) {
       op->SetIsRuntimeInferShape(true);
+    }
+    
+    std::vector<std::string> input_names = device_reader_->get_input_var_names();
+    std::set<std::string> input_names_set;
+    for (auto& i : input_names) {
+      input_names_set.insert(i);
+    }
+    for (auto& scope : thread_scope_vec_) {
+      std::vector<Variable*> need_reuse;
+      for (auto& var : block.AllVars()) {
+        std::string name = var->Name();
+        if (!var->Persistable()) {
+          if (input_names_set.find(var->Name()) != input_names_set.end()) {
+            continue;
+          }
+          auto* ptr = scope->FindLocalVar(var->Name());
+          if (ptr == nullptr) {
+            abort();
+          }
+          need_reuse.push_back(ptr);
+        }
+      }
+      need_reuse_var_vec_[scope] = need_reuse;
+    }
+
+    need_reuse_var_.clear();
+    for (auto& var : block.AllVars()) {
+      std::string name = var->Name();
+      if (!var->Persistable()) {
+        if (input_names_set.find(var->Name()) != input_names_set.end()) {
+          continue;
+        }
+        auto* ptr = thread_scope_->FindLocalVar(var->Name());
+        if (ptr == nullptr) {
+          abort();
+        }
+        need_reuse_var_.push_back(ptr);
+      } 
     }
   }
 }
@@ -251,12 +301,13 @@ PSGPUWorker::~PSGPUWorker() {
 
 int PSGPUWorker::OpRunAndShapeCheck(OperatorBase& op,
                                     const Scope& scope,
-                                    const platform::Place& place) {
+                                    const platform::Place& place,
+                                    size_t op_index, size_t batch_index) {
     if (shape_check_flag_.load()) {
       VLOG(0) << "Begin OpRunAndShapeCheck... "
             << shape_check_count_.load();
       if (shape_check_count_.fetch_sub(1) <= 0) {
-        // shape_check_flag_ = false;
+        shape_check_flag_ = false;
       }
       // before op run
       InferShapeCheckData check_data;
@@ -280,52 +331,333 @@ int PSGPUWorker::OpRunAndShapeCheck(OperatorBase& op,
         after_dims.push_back(infer_shape_ctx.GetOutputsDim(var_name_item.first));
         after_lods.push_back(infer_shape_ctx.GetOutputsLod(var_name_item.first));
       }
-      // auto& op_name = op.Info().Proto().type();
-      CHECK(pre_dims.size() == after_dims.size())
-                << "dims error, op name:" << op.Info().Proto().type();
+      std::string op_name = "unknow_op";
+      if (op.Info().HasOpProtoAndChecker()) {
+        op_name = op.Info().Proto().type();
+      }
+      #define SHAPE_CHECK_EQ(__VAL0, __VAL1) \
+        PADDLE_ENFORCE_EQ(__VAL0, __VAL1, platform::errors::Fatal( \
+                          "Shape check dims/lods error, op name: %s .", op_name))
+
+      SHAPE_CHECK_EQ(pre_dims.size(), after_dims.size());
       for (size_t i = 0; i < pre_dims.size(); i++) {
-        CHECK(pre_dims[i].size() == after_dims[i].size())
-                  << "dims error, op name:" << op.Info().Proto().type();
+        SHAPE_CHECK_EQ(pre_dims[i].size(), after_dims[i].size());
         for (size_t j = 0; j < pre_dims[i].size(); j++) {
-          CHECK(pre_dims[i][j] == after_dims[i][j])
-                    << "dims error, op name:" << op.Info().Proto().type();
+          SHAPE_CHECK_EQ(pre_dims[i][j], after_dims[i][j]);
         }
       }
 
-      CHECK(pre_lods.size() == after_lods.size())
-        << "lods error, op name:" << op.Info().Proto().type();
+      SHAPE_CHECK_EQ(pre_lods.size(), after_lods.size());
       for (size_t i = 0; i < pre_lods.size(); i++) {
-        CHECK(pre_lods[i].size() == after_lods[i].size())
-          << "lods error, op name:" << op.Info().Proto().type();
+        SHAPE_CHECK_EQ(pre_lods[i].size(), after_lods[i].size());
         for (size_t j = 0; j < pre_lods[i].size(); j++) {
           auto& x = pre_lods[i][j];
           auto& y = after_lods[i][j];
-          CHECK(x.size() == y.size())
-              << "lods error, op name:" << op.Info().Proto().type();
+          SHAPE_CHECK_EQ(x.size(), y.size());
           for (size_t i = 0; i < x.size(); i++) {
             const auto &x_level = x[i];
             const auto &y_level = y[i];
-            CHECK(x_level.size() == y_level.size())
-                << "lods error, op name:" << op.Info().Proto().type();
+            SHAPE_CHECK_EQ(x_level.size(), y_level.size());
             for (size_t j = 0; j < x_level.size(); j++) {
-               CHECK(x_level[j] == y_level[j])
-                  << "lods error, op name:" << op.Info().Proto().type();
+              SHAPE_CHECK_EQ(x_level[j], y_level[j]);
             }
           }
         }
       }
+      #undef SHAPE_CHECK_EQ
+    } else if (batch_index == 1 && build_var_shared_) {
+      op.Run(scope, place);
+      
+      //启发式做变量显存共享
+      std::string op_name = "unknow_op";
+      if (op.Info().HasOpProtoAndChecker()) {
+        op_name = op.Info().Proto().type();
+      }
+      //先做变量共享
+      RuntimeContext ctx(op.Inputs(), op.Outputs(), scope);
+      RuntimeInferShapeContext infer_shape_ctx(op, ctx);
+      auto outnames = op.Outputs();
+      for (auto& var_name_item : outnames) {
+        auto first_name = var_name_item.first;
+        auto vars = infer_shape_ctx.GetOutputVarPtrs(first_name);
+        for (size_t ii = 0; ii < var_name_item.second.size(); ii++) {
+          auto second_name = var_name_item.second[ii];
+          if (second_name == std::string("@EMPTY@")) {
+            break;
+          }
+          if (build_var_shared_set_.find(second_name) == build_var_shared_set_.end()) {
+            continue;
+          }
+          Variable *cur_var = get<Variable *>(vars[ii]);
+          if (cur_var == nullptr) {
+            continue;
+          }
+          if (!cur_var->IsType<LoDTensor>()) {
+            continue;
+          }
+          auto cur_tensor = cur_var->GetMutable<LoDTensor>();
+          if (cur_tensor == nullptr || !cur_tensor->initialized()) {
+            continue;
+          }
+          int64_t cur_numel = cur_tensor->numel();
+
+          //int64_t shard_numel = 0;
+          std::string shard_name = "";
+          Variable *shard_var = nullptr;
+          for (auto& iter : build_var_shared_in_shared_) {
+            auto tmp_var = scope.FindVar(iter);
+            if (tmp_var == nullptr) {
+              continue;
+            }
+            auto tmp_tensor = tmp_var->GetMutable<LoDTensor>();
+            if (tmp_tensor == nullptr || !tmp_tensor->initialized()) {
+              continue;
+            }
+            if (tmp_tensor->place() != cur_tensor->place()) {
+              continue;
+            }
+            if (tmp_tensor->dtype() != cur_tensor->dtype()) {
+              continue;
+            }
+            int64_t tmp_numel = tmp_tensor->numel();
+            if (tmp_numel == cur_numel) {
+              //shard_numel = tmp_numel;
+              shard_name = iter;
+              shard_var = tmp_var;
+              break;
+            }
+            /*
+            if (shard_numel == 0) {
+              shard_numel = tmp_numel;
+              shard_name = iter;
+              shard_var = tmp_var;
+            } else {
+              if (shard_numel < cur_numel && tmp_numel < cur_numel) {
+                if (tmp_numel > shard_numel) {
+                  shard_numel = tmp_numel;
+                  shard_name = iter;
+                  shard_var = tmp_var;
+                }
+              } else if (shard_numel < cur_numel && tmp_numel >= cur_numel) {
+                shard_numel = tmp_numel;
+                shard_name = iter;
+                shard_var = tmp_var;
+              } else {
+                if (tmp_numel < shard_numel) {
+                  shard_numel = tmp_numel;
+                  shard_name = iter;
+                  shard_var = tmp_var;
+                }
+              }
+            }
+            */
+          }
+          if (shard_var != nullptr) {
+            VLOG(0) << "lxchtestdd  " << shard_name << "  " << second_name << "  "
+                                      << (uint64_t)(cur_tensor->data()) << "  " << (uint64_t)(shard_var->GetMutable<LoDTensor>()->data());
+            shard_var->GetMutable<LoDTensor>()->ShareBufferWith(*(cur_var->GetMutable<LoDTensor>()));
+            build_var_shared_in_shared_.erase(shard_name);
+          }
+        }
+      }
+
+
+      //后续不用的变量加入到可共享的变量中
+      auto iter = build_var_shared_map_.find(op_index);
+      if (iter != build_var_shared_map_.end()) {
+        for (auto& iter1 : iter->second) {
+          build_var_shared_in_shared_.insert(iter1);
+        }
+      }
     } else {
-       op.Run(scope, place);
+      op.Run(scope, place);
+      /*
+      std::string op_name = "unknow_op";
+      if (op.Info().HasOpProtoAndChecker()) {
+        op_name = op.Info().Proto().type();
+      }
+      VLOG(0) << "lxchaa  " << "index:" << lxch_index << "  op_name:" << op_name;
+      RuntimeContext ctx(op.Inputs(), op.Outputs(), scope);
+      RuntimeInferShapeContext infer_shape_ctx(op, ctx);
+      auto outnames = op.Outputs();
+      for (auto& var_name_item : outnames) {
+        auto first_name = var_name_item.first;
+        auto dims = infer_shape_ctx.GetOutputsDim(first_name);
+        using InferShapeVarPtr = boost::variant<VarDesc *, Variable *>;
+
+        auto vars = infer_shape_ctx.GetOutputVarPtrs(first_name);
+        std::vector<std::string> second_names;
+        for (auto& nnn : var_name_item.second) {
+          if (nnn != std::string("@EMPTY@")) {
+            second_names.push_back(nnn);
+          }
+        }
+        if (second_names.size() != dims.size()) {
+          abort();
+        }
+        for (size_t jj = 0; jj < dims.size(); jj++) {
+          auto second_name = second_names[jj];
+          auto dim = dims[jj];
+          size_t dim_size = 1;
+          for (int ii = 0; ii < dim.size(); ii++) {
+            dim_size *= dim[ii];
+          }
+          size_t bytes = 0;
+          Variable *cur_var = get<Variable *>(vars[jj]);
+          if (cur_var != nullptr) {
+            if (cur_var->IsType<LoDTensor>()) {
+              auto cur_tensor = cur_var->GetMutable<LoDTensor>();
+              if (cur_tensor != nullptr && cur_tensor->initialized()) {
+                bytes = cur_tensor->capacity();
+              }
+            }
+          }
+          VLOG(0) << "lxchbb  " << "index:" << lxch_index << "  op_name:" << op_name
+                  << "  biaozhu:" << first_name << "  cur_name:" << second_name
+                  << "  size:" << dim_size << "  bytes:" << bytes;
+        }
+      }
+      */
     }
     return 0;
 }
 
+void PSGPUWorker::BuildVarShared() {
+  //step1 每个变量最后一个op用到的索引值
+  std::map<std::string, size_t> last_used_index_map;
+  for (size_t ii = 0; ii < ops_.size(); ii++) {
+    auto& op = ops_[ii];
+    bool need_skip = false;
+    for (auto t = 0u; t < skip_ops_.size(); ++t) {
+      if (op->Type().find(skip_ops_[t]) != std::string::npos) {
+        need_skip = true;
+        break;
+      }
+    }
+    if (need_skip) {
+      continue;
+    }
+    std::string op_name = "unknow_op";
+    if (op->Info().HasOpProtoAndChecker()) {
+      op_name = op->Info().Proto().type();
+    }
+
+    auto& inputs = op->Inputs();
+    auto& outputs = op->Outputs();
+    for (auto& var_name_item : inputs) {
+      for (auto& nnn : var_name_item.second) {
+        if (nnn == std::string("@EMPTY@")) {
+          continue;
+        }
+        if (op_name == std::string("coalesce_tensor")) {
+          build_var_shared_set_.erase(nnn);
+          continue;
+        }
+        if (build_var_shared_set_.find(nnn) != build_var_shared_set_.end()) {
+          last_used_index_map[nnn] = ii;
+        }
+      }
+    }
+    for (auto& var_name_item : outputs) {
+      for (auto& nnn : var_name_item.second) {
+        if (nnn == std::string("@EMPTY@")) {
+          continue;
+        }
+        if (op_name == std::string("coalesce_tensor")) {
+          build_var_shared_set_.erase(nnn);
+          continue;
+        }
+        if (build_var_shared_set_.find(nnn) != build_var_shared_set_.end()) {
+          last_used_index_map[nnn] = ii;
+        }
+      }
+    }
+  }
+  
+  //step2 每个算子结束后可以共享的数据
+  for (size_t ii = 0; ii < ops_.size(); ii++) {
+    auto& op = ops_[ii];
+    bool need_skip = false;
+    for (auto t = 0u; t < skip_ops_.size(); ++t) {
+      if (op->Type().find(skip_ops_[t]) != std::string::npos) {
+        need_skip = true;
+        break;
+      }
+    }
+    if (need_skip) {
+      continue;
+    }
+    auto& inputs = op->Inputs();
+    auto& outputs = op->Outputs();
+    for (auto& var_name_item : inputs) {
+      for (auto& nnn : var_name_item.second) {
+        if (nnn == std::string("@EMPTY@")) {
+          continue;
+        }
+        if (build_var_shared_set_.find(nnn) != build_var_shared_set_.end()) {
+          if (last_used_index_map[nnn] <= ii) {
+            build_var_shared_map_[ii].push_back(nnn);
+          }
+        }
+      }
+    }
+    for (auto& var_name_item : outputs) {
+      for (auto& nnn : var_name_item.second) {
+        if (nnn == std::string("@EMPTY@")) {
+          continue;
+        }
+        if (build_var_shared_set_.find(nnn) != build_var_shared_set_.end()) {
+          if (last_used_index_map[nnn] <= ii) {
+            build_var_shared_map_[ii].push_back(nnn);
+          }
+        }
+      }
+    }
+  }
+}
 
 void PSGPUWorker::TrainFiles() {
   VLOG(0) << "Begin to train files";
   platform::SetNumThreads(1);
   platform::Timer timeline;
   timeline.Start();
+
+  if (build_var_shared_) {
+    BuildVarShared();
+  }
+
+    struct RunOpInfo {
+    RunOpInfo() {
+      times = 0;
+      costs = 0;
+      pre_costs = 0;
+      run_costs = 0;
+      after_costs = 0;
+      other_times = 0;
+      first_costs = 0;
+      time_1 = 0;
+      time_2 = 0;
+      time_3 = 0;
+      time_4 = 0;
+      time_5 = 0;
+      time_6 = 0;
+    }
+    uint64_t other_times;
+    uint64_t times;
+    uint64_t costs;
+    uint64_t pre_costs;
+    uint64_t run_costs;
+    uint64_t after_costs;
+    uint64_t first_costs;
+    uint64_t time_1;
+    uint64_t time_2;
+    uint64_t time_3;
+    uint64_t time_4;
+    uint64_t time_5;
+    uint64_t time_6;
+  };
+  std::vector<RunOpInfo> op_time_info;
+  op_time_info.resize(ops_.size());
 
   int total_ins_num = 0;
 
@@ -346,7 +678,6 @@ void PSGPUWorker::TrainFiles() {
       task.scope = thread_scope_vec_[i];
       free_task_queue_.Push(task);
     }
-    // std::atomic<int>* thread_run = new std::atomic<int>(task_threads_);
     thread_count_.store(task_threads_num_);
     task_threads_.reserve(task_threads_num_);
     for (int i = 0; i < task_threads_num_; i++) {
@@ -382,7 +713,8 @@ void PSGPUWorker::TrainFiles() {
       }));
     }
   }
-
+  
+  size_t batch_index = 0;
   while (true) {
     auto thread_scope = thread_scope_;
     TaskData cur_task;
@@ -406,6 +738,14 @@ void PSGPUWorker::TrainFiles() {
           std::chrono::microseconds(200));
       }
       thread_scope = cur_task.scope;
+      std::vector<Variable*>& cur_scope_vars = need_reuse_var_vec_[thread_scope];
+      for (size_t iii = 0; iii < need_reuse_var_.size(); iii++) {
+        Variable* l_v = cur_scope_vars[iii];
+        Variable* r_v = need_reuse_var_[iii];
+        if (l_v->IsType<LoDTensor>()) {
+          l_v->GetMutable<LoDTensor>()->ShareBufferWith(*(r_v->GetMutable<LoDTensor>()));
+        }
+      }
     }
 
     if (cur_batch <= 0) {
@@ -413,10 +753,13 @@ void PSGPUWorker::TrainFiles() {
     }
 
     total_ins_num += cur_batch;
+    batch_index++;
 
     if (op_or_cudagraphs_.empty()) {
       // first batch we run original ops to check whethere the tensors has lod
-      for (auto& op : ops_) {
+      for (size_t ii = 0; ii < ops_.size(); ii++) {
+        auto& op = ops_[ii];
+        uint64_t lxch_op_1 = platform::Timer::lxch_get_base_time();
         bool need_skip = false;
         for (auto t = 0u; t < skip_ops_.size(); ++t) {
           if (op->Type().find(skip_ops_[t]) != std::string::npos) {
@@ -425,12 +768,31 @@ void PSGPUWorker::TrainFiles() {
           }
         }
         if (!need_skip) {
-          OpRunAndShapeCheck(*op, *thread_scope, place_);
-          // op->Run(*thread_scope, place_);
+          OpRunAndShapeCheck(*op, *thread_scope, place_, ii, batch_index);
+          uint64_t lxch_op_2 = platform::Timer::lxch_get_base_time();
+          if (op->lxch_time_1 >= lxch_op_1) {
+            op_time_info[ii].pre_costs += op->lxch_time_1 - lxch_op_1;
+            op_time_info[ii].after_costs += lxch_op_2 - op->lxch_time_2;
+            op_time_info[ii].run_costs += op->lxch_time_2 - op->lxch_time_1;
+
+            op_time_info[ii].time_1 += op->lxch_time_3 - lxch_op_1;
+            op_time_info[ii].time_2 += op->lxch_time_4 - op->lxch_time_3;
+            op_time_info[ii].time_3 += op->lxch_time_5 - op->lxch_time_4;
+            op_time_info[ii].time_4 += op->lxch_time_6 - op->lxch_time_5;
+            op_time_info[ii].time_5 += op->lxch_time_7 - op->lxch_time_6;
+            op_time_info[ii].time_6 += op->lxch_time_1 - op->lxch_time_7;
+          } else {
+            op_time_info[ii].other_times++;
+          }
+          if (op_time_info[ii].times == 0) {
+            op_time_info[ii].first_costs = op->lxch_time_1 - lxch_op_1;
+          }
+          op_time_info[ii].times++;
+          op_time_info[ii].costs += lxch_op_2 - lxch_op_1;
         }
       }
       graph_batch_size = cur_batch;
-      PrepareCudaGraph();
+//      PrepareCudaGraph();
     } else if (graph_batch_size != cur_batch || batch_cnt <= thread_id_) {
       // when batch_size changed, run original ops
       for (auto& op : ops_) {
@@ -443,7 +805,6 @@ void PSGPUWorker::TrainFiles() {
         }
         if (!need_skip) {
           OpRunAndShapeCheck(*op, *thread_scope, place_);
-          // op->Run(*thread_scope, place_);
         }
       }
     } else {
@@ -456,7 +817,6 @@ void PSGPUWorker::TrainFiles() {
             platform::BeginCUDAGraphCapture(place_, cudaStreamCaptureModeThreadLocal);
             for (auto& op : op_or_cuda_graph.ops) {
               OpRunAndShapeCheck(*op, *thread_scope, place_);
-              // op->Run(*thread_scope, place_);
             }
             op_or_cuda_graph.cudagraph = platform::EndCUDAGraphCapture();
           }
@@ -467,7 +827,6 @@ void PSGPUWorker::TrainFiles() {
         } else {
           for (auto& op : op_or_cuda_graph.ops) {
             OpRunAndShapeCheck(*op, *thread_scope, place_);
-            // op->Run(*thread_scope, place_);
           }
         }
       }
@@ -518,6 +877,15 @@ void PSGPUWorker::TrainFiles() {
     if (scope_num_ != 1) {
       device_reader_->get_pack(cur_task.pack);
       free_task_queue_.Push(cur_task);
+      std::vector<Variable*>& cur_scope_vars = need_reuse_var_vec_[thread_scope];
+      for (size_t iii = 0; iii < need_reuse_var_.size(); iii++) {
+        Variable* l_v = cur_scope_vars[iii];
+        Variable* r_v = need_reuse_var_[iii];
+        if (l_v->IsType<LoDTensor>()) {
+          r_v->GetMutable<LoDTensor>()->ShareBufferWith(*(l_v->GetMutable<LoDTensor>()));
+        }
+      }
+      
     }
   }
   if (need_dump_field_ || need_dump_param_) {
@@ -526,6 +894,47 @@ void PSGPUWorker::TrainFiles() {
   timeline.Pause();
   VLOG(0) << "GpuPs worker " << thread_id_ << " train cost "
           << timeline.ElapsedSec() << " seconds, ins_num: " << total_ins_num;
+
+  if (thread_id_ == 0) {
+    std::map<std::string, RunOpInfo> lxch_reduce_info;
+    for (size_t ii = 0; ii < op_time_info.size(); ii++) {
+      std::string op_name = ops_[ii]->Type();
+      if (lxch_reduce_info.find(op_name) == lxch_reduce_info.end()) {
+        lxch_reduce_info[op_name] = op_time_info[ii];
+      } else {
+        lxch_reduce_info[op_name].times += op_time_info[ii].times;
+        lxch_reduce_info[op_name].costs += op_time_info[ii].costs;
+        lxch_reduce_info[op_name].pre_costs += op_time_info[ii].pre_costs;
+        lxch_reduce_info[op_name].run_costs += op_time_info[ii].run_costs;
+        lxch_reduce_info[op_name].after_costs += op_time_info[ii].after_costs;
+        lxch_reduce_info[op_name].other_times += op_time_info[ii].other_times;
+        lxch_reduce_info[op_name].first_costs += op_time_info[ii].first_costs;
+        lxch_reduce_info[op_name].time_1 += op_time_info[ii].time_1;
+        lxch_reduce_info[op_name].time_2 += op_time_info[ii].time_2;
+        lxch_reduce_info[op_name].time_3 += op_time_info[ii].time_3;
+        lxch_reduce_info[op_name].time_4 += op_time_info[ii].time_4;
+        lxch_reduce_info[op_name].time_5 += op_time_info[ii].time_5;
+        lxch_reduce_info[op_name].time_6 += op_time_info[ii].time_6;
+      }
+    }
+
+    for (auto iter = lxch_reduce_info.begin(); iter != lxch_reduce_info.end(); iter++) {
+            LOG(ERROR) << "liaoxiaochao-run-detail op["
+                 << iter->first << "] times[" << iter->second.times
+                 << "] all_costs[" << iter->second.costs << "] pre_costs["
+                 << iter->second.pre_costs << "] run_costs["
+                 << iter->second.run_costs << "] after_costs["
+                 << iter->second.after_costs << "] other_times["
+                 << iter->second.other_times << "] first_costs["
+                 << iter->second.first_costs << "] time_1_costs["
+                 << iter->second.time_1 << "] time_2_costs["
+                 << iter->second.time_2 << "] time_3_costs["
+                 << iter->second.time_3 << "] time_4_costs["
+                 << iter->second.time_4 << "] time_5_costs["
+                 << iter->second.time_5 << "] time_6_costs["
+                 << iter->second.time_6 << "]";
+    }
+  }
   return;
 }
 

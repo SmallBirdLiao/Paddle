@@ -73,7 +73,7 @@ __global__ void search_kernel(Table* table,
     if (it != table->end()) {
       vals[i] = it->second;
     } else {
-      printf("pull miss key: %llu", keys[i]);
+      printf("apull miss key: %llu", keys[i]);
     }
   }
 }
@@ -93,9 +93,34 @@ __global__ void dy_mf_search_kernel(Table* table,
       ValType& input = *(ValType*)(it->second);
       *cur = input;
     } else {
-      if (keys[i] != 0) printf("pull miss key: %llu", keys[i]);
+      if (keys[i] != 0) printf("bpull miss key: %llu", keys[i]);
       ValType* cur = (ValType*)(d_value + i * pull_feature_value_size);
       *cur = ValType();
+    }
+  }
+}
+
+template <typename Table, typename ValType>
+__global__ void lxch_dy_mf_search_kernel(Table* table,
+                                   revert_info* keys,
+                                    ValType* vals, size_t len,
+                                    size_t pull_feature_value_size, int table_id) {
+  const size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < len) {
+    auto it = table->find(keys[i].key);
+    char* d_value = (char*)(vals);
+    if (it != table->end()) {
+      uint64_t offset = i * pull_feature_value_size;
+      ValType* cur = (ValType*)(d_value + offset);
+      ValType& input = *(ValType*)(it->second);
+      cur->lxch_equal(input);
+//      *cur = input;
+      keys[i].value_ptr = (void*)(it->second);
+    } else {
+      if (keys[i].key != 0) printf("cpull miss key: %llu  %d aa\n", keys[i].key, table_id);
+      ValType* cur = (ValType*)(d_value + i * pull_feature_value_size);
+      *cur = ValType();
+      keys[i].value_ptr = nullptr;
     }
   }
 }
@@ -142,8 +167,13 @@ class CuRandState {
     static HeterObjectPool<CuRandState> p;
     return p;
   }
+  static HeterObjectPool<CuRandState>& new_pool(int dev_id) {
+    static HeterObjectPool<CuRandState> p[100];
+    return p[dev_id];
+  }
 
   static std::shared_ptr<CuRandState> get() { return pool().Get(); }
+  static std::shared_ptr<CuRandState> new_get(int dev_id) { return new_pool(dev_id).Get(); }
 
   static void CUDART_CB pushback_cu_rand_state(void* data) {
     auto state = static_cast<std::shared_ptr<CuRandState>*>(data);
@@ -155,6 +185,9 @@ class CuRandState {
     CHECK(cudaLaunchHostFunc(stream, pushback_cu_rand_state,
                              new std::shared_ptr<CuRandState>(
                                  std::move(state))) == cudaSuccess);
+  }
+  static void new_push(std::shared_ptr<CuRandState> state, int dev_id) {
+    new_pool(dev_id).Push(state);
   }
 
  private:
@@ -230,6 +263,64 @@ __global__ void dy_mf_update_kernel(Table* table,
   }
 }
 
+template <typename Table, typename GradType, typename Sgd>
+__global__ void lxch_dy_mf_update_kernel(Table* table,
+                                    revert_info* const keys,
+                                    const GradType* grads, curandState* p_state, size_t len,
+                                    Sgd sgd, size_t grad_value_size) {
+  const size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < len) {
+    /*
+    auto it = table->find(keys[i].key);
+    if (it != table->end()) {
+      void* cur = (void*)(it->second);
+      if (cur != keys[i].value_ptr) {
+        printf("lxchdebugjj\n");
+      }
+    } else {
+      if (keys[i].value_ptr != nullptr) {
+        printf("lxchdebugii\n");
+      }
+    }
+    */
+
+    if (keys[i].value_ptr != nullptr) {
+      char* grads_tmp = (char*)(grads);
+      GradType* cur = (GradType*)(grads_tmp + i * grad_value_size);
+      sgd.dy_mf_update_value((typename Table::mapped_type)keys[i].value_ptr, *cur, p_state[i]);
+    } else {
+      if(keys[i].key != 0) printf("push miss key: %llu\n", keys[i].key);
+    }
+  }
+}
+
+__global__ void lxch_copy_from_value(revert_info* keys,
+                                    char* des_value, size_t len, size_t value_size) {
+  const size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < len) {
+    size_t index = i / value_size;
+    size_t offset = i % value_size;
+    char* value_ptr = (char*)(keys[index].value_ptr);
+    if (value_ptr != nullptr) {
+      des_value[i] = value_ptr[offset];
+    }
+  }
+}
+
+__global__ void lxch_copy_to_value(revert_info* keys,
+                                    char* des_value, size_t len, size_t value_size) {
+  const size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < len) {
+    size_t index = i / value_size;
+    size_t offset = i % value_size;
+    char* value_ptr = (char*)(keys[index].value_ptr);
+    if (value_ptr != nullptr) {
+      value_ptr[offset] = des_value[i];
+    }
+  }
+}
+
+
 template <typename KeyType, typename ValType>
 HashTable<KeyType, ValType>::HashTable(size_t capacity) {
   container_ = new TableContainer<KeyType, ValType>(capacity);
@@ -265,6 +356,16 @@ void HashTable<KeyType, ValType>::get(gpuStream_t stream, const KeyType* d_keys,
   const int grid_size = (len - 1) / BLOCK_SIZE_ + 1;
   dy_mf_search_kernel<<<grid_size, BLOCK_SIZE_, 0, stream>>>(
       container_, d_keys, d_vals, len, pull_feature_value_size_);
+}
+
+template <typename KeyType, typename ValType>
+void HashTable<KeyType, ValType>::get(gpuStream_t stream, revert_info* d_keys, ValType d_vals, size_t len, int table_id) {
+  if (len == 0) {
+    return;
+  }
+  const int grid_size = (len - 1) / BLOCK_SIZE_ + 1;
+  lxch_dy_mf_search_kernel<<<grid_size, BLOCK_SIZE_, 0, stream>>>(
+      container_, d_keys, d_vals, len, pull_feature_value_size_, table_id);
 }
 
 template <typename KeyType, typename ValType>
@@ -406,6 +507,36 @@ void HashTable<KeyType, ValType>::update(const KeyType* d_keys,
   dy_mf_update_kernel<<<grid_size, BLOCK_SIZE_, 0, stream>>>(
       container_, d_keys, d_grads, d_state, len, sgd, push_grad_value_size_);
   CuRandState::push(state, stream);
+}
+
+template <typename KeyType, typename ValType>
+template <typename GradType, typename Sgd>
+void HashTable<KeyType, ValType>::update(revert_info* d_keys,
+                                         const GradType* d_grads, size_t len,
+                                         gpuStream_t stream, Sgd sgd, int dev_id) {
+  if (len == 0) {
+    return;
+  }
+  if (1) {
+    auto state = CuRandState::new_get(dev_id);
+    auto d_state = state->get(len, stream);
+    int grid_size = (len - 1) / BLOCK_SIZE_ + 1;
+    lxch_dy_mf_update_kernel<<<grid_size, BLOCK_SIZE_, 0, stream>>>(
+        container_, d_keys, d_grads, d_state, len, sgd, push_grad_value_size_);
+    cudaStreamSynchronize(stream);
+    CuRandState::new_push(state, dev_id);
+  } else {
+    auto state = CuRandState::get();
+    auto d_state = state->get(len, stream);
+    platform::CUDAPlace place = platform::CUDAPlace(dev_id);
+    auto d_value = memory::Alloc(place, len * pull_feature_value_size_);
+    char* d_value_ptr = (char*)(d_value->ptr());
+    int grid_size = (len * pull_feature_value_size_ - 1) / BLOCK_SIZE_ + 1;
+    lxch_copy_from_value<<<grid_size, BLOCK_SIZE_, 0, stream>>>(d_keys, d_value_ptr, len * pull_feature_value_size_, pull_feature_value_size_);
+    lxch_copy_to_value<<<grid_size, BLOCK_SIZE_, 0, stream>>>(d_keys, d_value_ptr, len * pull_feature_value_size_, pull_feature_value_size_);
+    CuRandState::push(state, stream);
+    cudaStreamSynchronize(stream);
+  }
 }
 
 }  // end namespace framework
