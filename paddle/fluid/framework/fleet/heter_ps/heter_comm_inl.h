@@ -709,8 +709,8 @@ void HeterComm<KeyType, ValType, GradType>::create_storage(int start_index,
   auto& nodes = path_[start_index][end_index].nodes_;
   for (size_t i = 0; i < nodes.size(); ++i) {
     platform::CUDADeviceGuard guard(resource_->dev_id(nodes[i].gpu_num));
-      platform::CUDAPlace place = platform::CUDAPlace(resource_->dev_id(nodes[i].gpu_num));
-    
+    platform::CUDAPlace place = platform::CUDAPlace(resource_->dev_id(nodes[i].gpu_num));
+/*    
     if (keylen != 0) {
       if (nodes[i].d_key_storage == NULL || nodes[i].d_key_storage->size() < keylen) {
         nodes[i].d_key_storage = NULL;
@@ -727,7 +727,7 @@ void HeterComm<KeyType, ValType, GradType>::create_storage(int start_index,
       nodes[i].val_bytes_len = vallen;
       nodes[i].val_storage = (char*)nodes[i].d_val_storage->ptr();
     }
-    /*
+*/  
     if (keylen != 0) {
       if (nodes[i].key_storage != nullptr) {
         PADDLE_ENFORCE_GPU_SUCCESS(allocator->DeviceFree(resource_->dev_id(nodes[i].gpu_num),
@@ -752,7 +752,7 @@ void HeterComm<KeyType, ValType, GradType>::create_storage(int start_index,
           vallen, resource_->remote_stream(nodes[i].gpu_num, start_index)));
       nodes[i].val_bytes_len = vallen;
     }
-    */
+    
   }
 }
 
@@ -763,13 +763,13 @@ void HeterComm<KeyType, ValType, GradType>::destroy_storage(int start_index,
   auto& nodes = path_[start_index][end_index].nodes_;
   for (size_t i = 0; i < nodes.size(); ++i) {
     platform::CUDADeviceGuard guard(resource_->dev_id(nodes[i].gpu_num));
-    
+/*    
     nodes[i].key_storage = nullptr;
     nodes[i].val_storage = nullptr;
     nodes[i].d_key_storage = NULL;
     nodes[i].d_val_storage = NULL;
+*/    
     
-    /*
     if (nodes[i].key_storage != nullptr) {
       PADDLE_ENFORCE_GPU_SUCCESS(allocator->DeviceFree(resource_->dev_id(nodes[i].gpu_num),
                             nodes[i].key_storage));
@@ -780,7 +780,7 @@ void HeterComm<KeyType, ValType, GradType>::destroy_storage(int start_index,
                             nodes[i].val_storage));
       nodes[i].val_storage = nullptr;
     }
-    */
+    
   }
 }
 
