@@ -523,6 +523,9 @@ int PSGPUWorker::OpRunAndShapeCheck(OperatorBase& op,
 }
 
 void PSGPUWorker::BuildVarShared() {
+  //trick处理，如果一个变量，出现在两个算子的output里面，直接设置这个变量不能被共享
+
+  std::set<std::string> output_dup_set;
   //step1 每个变量最后一个op用到的索引值
   std::map<std::string, size_t> last_used_index_map;
   for (size_t ii = 0; ii < ops_.size(); ii++) {
@@ -567,6 +570,14 @@ void PSGPUWorker::BuildVarShared() {
           build_var_shared_set_.erase(nnn);
           continue;
         }
+
+        if (output_dup_set.find(nnn) != output_dup_set.end()) {
+          build_var_shared_set_.erase(nnn);
+          VLOG(0) << "lxchtestff " << nnn;
+          continue;
+        }
+        output_dup_set.insert(nnn);
+
         if (build_var_shared_set_.find(nnn) != build_var_shared_set_.end()) {
           last_used_index_map[nnn] = ii;
         }

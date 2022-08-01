@@ -710,7 +710,7 @@ void HeterComm<KeyType, ValType, GradType>::create_storage(int start_index,
   for (size_t i = 0; i < nodes.size(); ++i) {
     platform::CUDADeviceGuard guard(resource_->dev_id(nodes[i].gpu_num));
       platform::CUDAPlace place = platform::CUDAPlace(resource_->dev_id(nodes[i].gpu_num));
-    /*
+    
     if (keylen != 0) {
       if (nodes[i].d_key_storage == NULL || nodes[i].d_key_storage->size() < keylen) {
         nodes[i].d_key_storage = NULL;
@@ -727,7 +727,7 @@ void HeterComm<KeyType, ValType, GradType>::create_storage(int start_index,
       nodes[i].val_bytes_len = vallen;
       nodes[i].val_storage = (char*)nodes[i].d_val_storage->ptr();
     }
-    */
+    /*
     if (keylen != 0) {
       if (nodes[i].key_storage != nullptr) {
         PADDLE_ENFORCE_GPU_SUCCESS(allocator->DeviceFree(resource_->dev_id(nodes[i].gpu_num),
@@ -752,7 +752,7 @@ void HeterComm<KeyType, ValType, GradType>::create_storage(int start_index,
           vallen, resource_->remote_stream(nodes[i].gpu_num, start_index)));
       nodes[i].val_bytes_len = vallen;
     }
-    
+    */
   }
 }
 
@@ -763,13 +763,13 @@ void HeterComm<KeyType, ValType, GradType>::destroy_storage(int start_index,
   auto& nodes = path_[start_index][end_index].nodes_;
   for (size_t i = 0; i < nodes.size(); ++i) {
     platform::CUDADeviceGuard guard(resource_->dev_id(nodes[i].gpu_num));
-    /*
+    
     nodes[i].key_storage = nullptr;
     nodes[i].val_storage = nullptr;
     nodes[i].d_key_storage = NULL;
     nodes[i].d_val_storage = NULL;
-    */
     
+    /*
     if (nodes[i].key_storage != nullptr) {
       PADDLE_ENFORCE_GPU_SUCCESS(allocator->DeviceFree(resource_->dev_id(nodes[i].gpu_num),
                             nodes[i].key_storage));
@@ -780,7 +780,7 @@ void HeterComm<KeyType, ValType, GradType>::destroy_storage(int start_index,
                             nodes[i].val_storage));
       nodes[i].val_storage = nullptr;
     }
-    
+    */
   }
 }
 
@@ -1713,9 +1713,11 @@ void HeterComm<KeyType, ValType, GradType>::lxch_pull_sparse(int num,
                             kernel_1, kernel_4, kernel_16, kernel_64, kernel_256, len);
   PADDLE_ENFORCE_GPU_SUCCESS(cudaStreamSynchronize(stream));
 
+
 /*  LXCH_PADDLE_ENFORCE_GPU_SUCCESS(cudaStreamSynchronize(stream));
   auto lxch_step_20 = platform::Timer::lxch_get_base_time();
-  VLOG(0) << "lxch pull detail: " << " sa:" << lxch_step_2 - lxch_step_1
+  VLOG(0) << "lxch pull detail: " << " device:" << num
+                                  << " sa:" << lxch_step_2 - lxch_step_1
                                   << " sb:" << lxch_step_3 - lxch_step_2
                                   << " sc:" << lxch_step_4 - lxch_step_3
                                   << " sd:" << lxch_step_5 - lxch_step_4
@@ -1734,7 +1736,8 @@ void HeterComm<KeyType, ValType, GradType>::lxch_pull_sparse(int num,
                                   << " sq:" << lxch_step_18 - lxch_step_17
                                   << " sr:" << lxch_step_19 - lxch_step_18
                                   << " ss:" << lxch_step_20 - lxch_step_19;
-  */
+*/
+
   /*
   for (int i = 0; i < total_gpu; ++i) {
     if (h_left[i] == -1 || h_right[i] == -1) {
@@ -2193,6 +2196,7 @@ void HeterComm<KeyType, ValType, GradType>::lxch_push_sparse(int gpu_num,
   } else {
     //每个线程操作多张卡的更新
     lxch_barrir();
+    auto lxch_step_1 = platform::Timer::lxch_get_base_time();
     std::vector<platform::Timer> time_lines;
     time_lines.resize(total_gpu);
 
@@ -2224,6 +2228,8 @@ void HeterComm<KeyType, ValType, GradType>::lxch_push_sparse(int gpu_num,
         time_lines[i].Pause();
       }
     }
+    auto lxch_step_2 = platform::Timer::lxch_get_base_time();
+    VLOG(0) << "lxchdebugc  " << lxch_step_2 - lxch_step_1;
     lxch_barrir();
   }
 

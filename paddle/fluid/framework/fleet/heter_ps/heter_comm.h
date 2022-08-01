@@ -153,13 +153,13 @@ class HeterComm {
     Node() {
       key_storage = nullptr;
       val_storage = nullptr;
-//      d_key_storage = NULL;
-//      d_val_storage = NULL;
+      d_key_storage = NULL;
+      d_val_storage = NULL;
     }
     cudaStream_t in_stream;
     cudaStream_t out_stream;
-//    memory::allocation::AllocationPtr d_key_storage;
-//    memory::allocation::AllocationPtr d_val_storage;
+    memory::allocation::AllocationPtr d_key_storage;
+    memory::allocation::AllocationPtr d_val_storage;
     char* key_storage;
     char* val_storage;
     int sync;
