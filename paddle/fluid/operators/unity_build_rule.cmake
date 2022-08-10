@@ -235,6 +235,7 @@ register_unity_group(cc
     mkldnn/scale_mkldnn_op.cc
     scatter_nd_add_op.cc
     scatter_op.cc
+    seqpool_scatter_op.cc
     seed_op.cc
     select_input_op.cc
     select_output_op.cc)
@@ -494,6 +495,7 @@ register_unity_group(cu
     save_op.cu
     scale_op.cu
     scatter_nd_add_op.cu
+    scatter_op.cu
     scatter_op.cu
     seed_op.cu)
 register_unity_group(cu

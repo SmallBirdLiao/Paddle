@@ -1747,38 +1747,457 @@ void SlotRecordDataset::PrepareTrain() {
       VLOG(3) << "read from channel to records with records size: "
               << input_records_.size();
     }
-    //先排序
-    auto lxch_step_1 = paddle::platform::Timer::lxch_get_base_time();
-    if (LXCH_SWITCH) {
-      std::map<size_t, std::vector<SlotRecord>> shard_map;
-      for (size_t i = 0; i < input_records_.size(); i++) {
-        size_t len = this->input_records_[i]->slot_uint64_feasigns_.slot_values.size();
-        shard_map[len].push_back(input_records_[i]);
-      }
-      input_records_.clear();
-      for (auto iter = shard_map.rbegin(); iter != shard_map.rend(); iter++) {
-        input_records_.insert(input_records_.end(), iter->second.begin(), iter->second.end());
-      }
-      /*
-      std::sort(input_records_.begin(), input_records_.end(), [](const SlotRecord& l, const SlotRecord& r) -> bool {
-        return l->slot_uint64_feasigns_.slot_values.size() > r->slot_uint64_feasigns_.slot_values.size();
-      });
-      */
-    }
-    auto lxch_step_2 = paddle::platform::Timer::lxch_get_base_time();
-    /*
-    if (LXCH_SWITCH) {
-      for (size_t i = 0; i < input_records_.size(); i++) {
-        VLOG(0) << "lxchdebuge " << input_records_[i]->slot_uint64_feasigns_.slot_values.size();
-      }
-    }
-    */
-    VLOG(3) << "input records size: " << input_records_.size();
-    int64_t total_ins_num = input_records_.size();
-    std::vector<std::pair<int, int>> offset;
+#ifdef PADDLE_WITH_PSCORE
+    auto fleet_ptr = distributed::FleetWrapper::GetInstance();
+#else
+    auto fleet_ptr = framework::FleetWrapper::GetInstance();
+#endif
     int default_batch_size =
         reinterpret_cast<SlotRecordInMemoryDataFeed*>(readers_[0].get())
             ->GetDefaultBatchSize();
+
+    //先排序
+    static int load_data_pass = 0;
+    auto lxch_step_1 = paddle::platform::Timer::lxch_get_base_time();
+    if (LXCH_SWITCH) {
+      if (1) { //策略1，不做uid打散
+        std::map<size_t, std::vector<SlotRecord>> shard_map;
+        for (size_t i = 0; i < input_records_.size(); i++) {
+          size_t len = this->input_records_[i]->slot_uint64_feasigns_.slot_values.size();
+          shard_map[len].push_back(input_records_[i]);
+        }
+        input_records_.clear();
+        for (auto iter = shard_map.rbegin(); iter != shard_map.rend(); iter++) {
+          input_records_.insert(input_records_.end(), iter->second.begin(), iter->second.end());
+        }
+      } else if (0) { //策略2, 一个区间内做shuffel，但是不做精细化打散
+        std::map<size_t, std::vector<SlotRecord>> shard_map;
+        for (size_t i = 0; i < input_records_.size(); i++) {
+          size_t len = this->input_records_[i]->slot_uint64_feasigns_.slot_values.size();
+          shard_map[len].push_back(input_records_[i]);
+        }
+        input_records_.clear();
+        for (auto iter = shard_map.rbegin(); iter != shard_map.rend(); iter++) {
+          input_records_.insert(input_records_.end(), iter->second.begin(), iter->second.end());
+        }
+        size_t batch_size = default_batch_size * thread_num_;
+        if (input_records_.size() > batch_size) {
+          size_t start_index = batch_size;
+          uint32_t len = input_records_[start_index]->slot_uint64_feasigns_.slot_values.size();
+          for (size_t i = start_index; i < input_records_.size(); i+= batch_size) {
+            if (i == start_index) {
+              continue;
+            }
+            uint32_t len_tmp = input_records_[i]->slot_uint64_feasigns_.slot_values.size();
+            if (fabs((len_tmp - len) / 3.0) < 20) {
+              continue;
+            }
+            if (i - start_index < 40 * batch_size) {
+              continue;
+            }
+            std::shuffle(input_records_.begin() +  start_index ,input_records_.begin() + i, fleet_ptr->LocalRandomEngine());
+            start_index = i;
+            len = len_tmp;
+          }
+          if (input_records_.size() - start_index < 40 * batch_size) {
+            start_index = input_records_.size() - 40 * batch_size;
+          }
+          std::shuffle(input_records_.begin() +  start_index ,input_records_.end(), fleet_ptr->LocalRandomEngine());
+        }
+      } else if (0) {
+        //区间内尽量按照uid打散
+        std::atomic<int> run_total(0);
+        auto fun_1 = [this, &run_total, fleet_ptr] (size_t start, size_t end, size_t batch_size) -> void {
+          std::vector<SlotRecord> merge_vec;
+          merge_vec.insert(merge_vec.begin(), this->input_records_.begin() + start, this->input_records_.begin() + end);
+          std::shuffle(merge_vec.begin(), merge_vec.end(), fleet_ptr->LocalRandomEngine());
+
+          for (size_t i = 0, j = start; i < merge_vec.size(); i++, j++) {
+            this->input_records_[j] = merge_vec[i];
+          }
+          run_total.fetch_sub(1);
+          return;
+
+          /*
+          BloomFilter bf(batch_size);
+          std::vector<SlotRecord> result_vec;
+          size_t base_total = merge_vec.size();
+          size_t total_add = 0;
+          do {
+            if (base_total - total_add <= 2 * batch_size) {
+              std::vector<SlotRecord> merge_vec_tmp;
+              for (auto& iter : merge_vec) {
+                if (iter != nullptr) {
+                  merge_vec_tmp.push_back(iter);
+                }
+              }
+              merge_vec.clear();
+              merge_vec = std::move(merge_vec_tmp);
+              std::shuffle(merge_vec.begin(), merge_vec.end(), fleet_ptr->LocalRandomEngine());
+              result_vec.insert(result_vec.end(), merge_vec.begin(), merge_vec.end());
+              break;
+            }
+            bf.reset();
+            size_t cur_add = 0;
+            for (size_t i = 0; i < merge_vec.size(); i++) {
+              if (merge_vec[i] == nullptr) {
+                continue;
+              }
+              if (bf.match(merge_vec[i]->uid_key)) {
+                continue;
+              }
+              result_vec.push_back(merge_vec[i]);
+              bf.add_key(merge_vec[i]->uid_key);
+              merge_vec[i] = nullptr;
+              total_add++;
+              cur_add++;
+              if (cur_add == batch_size) {
+                break;
+              }
+            }
+            if (merge_vec.size() + result_vec.size() - base_total > 5 * base_total) {
+              std::vector<SlotRecord> merge_vec_tmp;
+              for (auto& iter : merge_vec) {
+                if (iter != nullptr) {
+                  merge_vec_tmp.push_back(iter);
+                }
+              }
+              merge_vec.clear();
+              merge_vec = std::move(merge_vec_tmp);
+            }
+          } while (true);
+
+          if (0) {
+            std::set<uint64_t> lxch_old;
+            for (size_t j = start; j < end; j++) {
+              uint64_t key = (uint64_t)this->input_records_[j];
+              if (lxch_old.find(key) != lxch_old.end()) {
+                abort();
+              }
+              lxch_old.insert(key);
+            }
+
+            std::set<uint64_t> lxch_new;
+            for (size_t j = 0; j < result_vec.size(); j++) {
+              uint64_t key = (uint64_t)result_vec[j];
+              if (lxch_new.find(key) != lxch_new.end()) {
+                abort();
+              }
+              lxch_new.insert(key);
+            }
+            
+            if (lxch_old.size() != lxch_new.size()) {
+              abort();
+            }
+
+            for (auto iter = lxch_new.begin(); iter != lxch_new.end(); iter++) {
+              if (lxch_old.find(*iter) == lxch_old.end()) {
+                abort();
+              }
+            }
+          }
+
+          for (size_t i = 0, j = start; i < result_vec.size(); i++, j++) {
+            this->input_records_[j] = result_vec[i];
+          }
+          run_total.fetch_sub(1);
+          */
+        };
+
+        std::map<size_t, std::vector<SlotRecord>> shard_map;
+        for (size_t i = 0; i < input_records_.size(); i++) {
+          size_t len = this->input_records_[i]->slot_uint64_feasigns_.slot_values.size();
+          shard_map[len].push_back(input_records_[i]);
+        }
+        input_records_.clear();
+        for (auto iter = shard_map.rbegin(); iter != shard_map.rend(); iter++) {
+          input_records_.insert(input_records_.end(), iter->second.begin(), iter->second.end());
+        }
+
+        size_t batch_size = default_batch_size * thread_num_;
+        if (input_records_.size() > batch_size) {
+          std::vector<std::thread> threads_vec;
+          size_t start_index = batch_size;
+          uint32_t len = input_records_[start_index]->slot_uint64_feasigns_.slot_values.size();
+          for (size_t i = start_index; i < input_records_.size(); i+= batch_size) {
+            do {
+              if (run_total.load() >= 30) {
+                usleep(100);
+                continue;
+              }
+              break;
+            } while (true);
+
+            if (i == start_index) {
+              continue;
+            }
+            uint32_t len_tmp = input_records_[i]->slot_uint64_feasigns_.slot_values.size();
+            if (fabs((len_tmp - len) / 3.0) < 50) {
+              continue;
+            }
+            if (i - start_index < 100 * batch_size) {
+              continue;
+            }
+            if (input_records_.size() - i > 40 * batch_size) {
+              threads_vec.push_back(std::thread(fun_1, start_index, i, batch_size));
+              run_total.fetch_add(1);
+            } else {
+              threads_vec.push_back(std::thread(fun_1, start_index, input_records_.size(), batch_size));
+              i = input_records_.size();
+              run_total.fetch_add(1);
+            }
+            start_index = i;
+            len = len_tmp;
+          }
+          if (start_index < input_records_.size()) {
+            threads_vec.push_back(std::thread(fun_1, start_index, input_records_.size(), batch_size));
+          }
+          for (std::thread& t : threads_vec) {
+            t.join();
+          }
+        }
+
+      } else if (0) { //进行化打散
+        /*
+        std::vector<std::vector<SlotRecord>> shard_map;
+        for (size_t i = 0; i < input_records_.size(); i++) {
+          size_t len = this->input_records_[i]->slot_uint64_feasigns_.slot_values.size();
+          if (len >= shard_map.size()) {
+            shard_map.resize(len+1);
+          }
+          shard_map[len].push_back(input_records_[i]);
+        }
+
+        std::vector<SlotRecord> lxch_tmp;
+        lxch_tmp.insert(lxch_tmp.begin(), input_records_.begin(), input_records_.end());
+      
+        input_records_.clear();
+        auto lxch_step_a = paddle::platform::Timer::lxch_get_base_time();
+        std::atomic<int> run_total(0);
+        std::atomic<bool> first_is_done(false);
+        int batch_size = default_batch_size * thread_num_;
+        std::mutex insert_mutex;
+        auto fun_1 = [this, &shard_map, &run_total, batch_size, &first_is_done, &insert_mutex]
+                            (int start, int end, bool is_first, bool is_end) -> void {
+            std::vector<SlotRecord> merge_vec;
+            for (int i = end - 1 ; i >= start; i--) {
+              merge_vec.insert(merge_vec.end(), shard_map[i].begin(), shard_map[i].end());
+              shard_map[i].clear();
+            }
+
+            std::vector<SlotRecord> result_vec;
+            std::vector<int> cur_index;
+            BloomFilter bf(batch_size);
+            if (is_end) {
+              int cur_total = 0;
+              do {
+                bf.reset();
+                int cur_add = 0;
+                for (size_t i = 0; i < merge_vec.size(); i++) {
+                  if (merge_vec[i] == nullptr) {
+                    continue;
+                  }
+                  if (bf.match(merge_vec[i]->uid_key)) {
+                    continue;
+                  }
+                
+                  result_vec.push_back(merge_vec[i]);
+                  bf.add_key(merge_vec[i]->uid_key);
+                  merge_vec[i] = nullptr;
+                  cur_add++;
+                  cur_total++;
+                  if (cur_add == batch_size) {
+                    break;
+                  }
+                }
+                if (cur_total >= 4 * batch_size) {
+                  std::vector<SlotRecord> merge_vec_tmp;
+                  for (auto& iter : merge_vec) {
+                    if (iter != nullptr) {
+                      merge_vec_tmp.push_back(iter);
+                    }
+                  }
+                  merge_vec.clear();
+                  merge_vec = std::move(merge_vec_tmp);
+                  cur_total = 0;
+                }
+                if (cur_add == 0) {
+                  break;
+                }
+              } while (true);
+            } else {
+              int cur_total = 0;
+              do {
+                bf.reset();
+                int cur_add = 0;
+                cur_index.clear();
+                for (size_t i = 0; i < merge_vec.size(); i++) {
+                  if (merge_vec[i] == nullptr) {
+                    continue;
+                  }
+                  if (bf.match(merge_vec[i]->uid_key)) {
+                    continue;
+                  }
+
+                  cur_index.push_back(i);
+                  bf.add_key(merge_vec[i]->uid_key);
+                  cur_add++;
+                  cur_total++;
+                  if (cur_add == batch_size) {
+                    break;
+                  }
+                }
+                if (cur_add == batch_size) {
+                  for (auto &iter : cur_index) {
+                    result_vec.push_back(merge_vec[iter]);
+                    merge_vec[iter] = nullptr;
+                  }
+                } else {
+                  if (result_vec.size() == 0 && merge_vec.size() >= (size_t)batch_size) {
+                    for (auto &iter : cur_index) {
+                      result_vec.push_back(merge_vec[iter]);
+                      merge_vec[iter] = nullptr;
+                    }
+                    for (size_t i = 0; i < merge_vec.size(); i++) {
+                      if (merge_vec[i] != nullptr) {
+                        result_vec.push_back(merge_vec[i]);
+                        merge_vec[i] = nullptr;
+                      }
+                      if (result_vec.size() == (size_t)batch_size) {
+                        break;
+                      }
+                    }
+                  }
+                  break;
+                }
+                if (cur_total >= 4 * batch_size) {
+                  std::vector<SlotRecord> merge_vec_tmp;
+                  for (auto& iter : merge_vec) {
+                    if (iter != nullptr) {
+                      merge_vec_tmp.push_back(iter);
+                    }
+                  }
+                  merge_vec.clear();
+                  merge_vec = std::move(merge_vec_tmp);
+                  cur_total = 0;
+                }
+              } while (true);
+            }
+
+            std::vector<SlotRecord> merge_vec_tmp;
+            for (auto& iter : merge_vec) {
+              if (iter != nullptr) {
+                merge_vec_tmp.push_back(iter);
+              }
+            }
+            shard_map[start].insert(shard_map[start].end(), merge_vec_tmp.begin(), merge_vec_tmp.end());
+          
+            if (is_first) {
+              insert_mutex.lock();
+              this->input_records_.insert(this->input_records_.end(), result_vec.begin(), result_vec.end());
+              first_is_done.store(true);
+              insert_mutex.unlock();
+            } else {
+              while (first_is_done.load() == false) {
+                usleep(100);
+                continue;
+              }
+              insert_mutex.lock();
+              this->input_records_.insert(this->input_records_.end(), result_vec.begin(), result_vec.end());
+              insert_mutex.unlock();
+            }
+
+            run_total.fetch_sub(1);
+        };
+
+        bool is_first = true;
+        while (true) {
+          int total_ins = 0;
+          int thread_ins = default_batch_size * thread_num_ * 200;
+          std::vector<std::thread> threads_vec;
+          int last_index = shard_map.size();
+          int no_empty_size = 0;
+          for (int ii = (int)(shard_map.size()) - 1; ii >= 0; ii--) {
+            total_ins += shard_map[ii].size();
+            if (shard_map[ii].size() != 0) {
+              no_empty_size++;
+            }
+
+            //避免启动过多线程在这个环节，做一个限制
+            do {
+              if (run_total.load() >= 30) {
+                usleep(100);
+                continue;
+              }
+              break;
+            } while (true);
+
+            if (total_ins >= thread_ins && no_empty_size != 1 && ii != 0) {
+              threads_vec.push_back(std::thread(fun_1, ii, last_index, is_first, false));
+              is_first = false;
+              last_index = ii;
+              total_ins = 0;
+              no_empty_size = 0;
+              run_total.fetch_add(1);
+            } else if (ii == 0 && total_ins != 0) {
+              bool is_last = last_index == (int)shard_map.size() ? true : false;
+              threads_vec.push_back(std::thread(fun_1, ii, last_index, is_first, is_last));
+              is_first = false;
+              last_index = ii;
+              total_ins = 0;
+              run_total.fetch_add(1);
+            }
+          }
+          if (threads_vec.size() == 0) {
+            break;
+          }
+          for (std::thread& t : threads_vec) {
+            t.join();
+          }
+          threads_vec.clear();
+        }
+
+        auto lxch_step_b = paddle::platform::Timer::lxch_get_base_time();
+        VLOG(0) << "lxch shuffer time is:" << lxch_step_b - lxch_step_a;
+
+        if (1) {
+          if (lxch_tmp.size() != input_records_.size()) {
+            abort();
+          }
+          std::set<uint64_t> lxch_old;
+          for (auto iter : lxch_tmp) {
+            uint64_t key = (uint64_t)iter;
+            if (lxch_old.find(key) != lxch_old.end()) {
+              abort();
+            }
+          }
+
+          std::set<uint64_t> lxch_new;
+          for (auto iter : input_records_) {
+            uint64_t key = (uint64_t)iter;
+            if (lxch_new.find(key) != lxch_new.end()) {
+              abort();
+            }
+          }
+          if (lxch_old.size() != lxch_new.size()) {
+            abort();
+          }
+          for (auto iter = lxch_new.begin(); iter != lxch_new.end(); iter++) {
+            if (lxch_old.find(*iter) == lxch_old.end()) {
+              abort();
+            }
+          }
+
+        }
+        */
+      }
+    }
+
+    auto lxch_step_2 = paddle::platform::Timer::lxch_get_base_time();
+
+    VLOG(3) << "input records size: " << input_records_.size();
+    int64_t total_ins_num = input_records_.size();
+    std::vector<std::pair<int, int>> offset;
     VLOG(3) << "thread_num: " << thread_num_
             << " memory size: " << total_ins_num
             << " default batch_size: " << default_batch_size;
@@ -1789,18 +2208,12 @@ void SlotRecordDataset::PrepareTrain() {
       reinterpret_cast<SlotRecordInMemoryDataFeed*>(readers_[i].get())
           ->SetRecord(&input_records_[0]);
     }
-    //在来一次shuffer操作
-#ifdef PADDLE_WITH_PSCORE
-    auto fleet_ptr = distributed::FleetWrapper::GetInstance();
-#else
-    auto fleet_ptr = framework::FleetWrapper::GetInstance();
-#endif
+
     auto lxch_step_3 = paddle::platform::Timer::lxch_get_base_time();
     if (LXCH_SWITCH) {
       //tips1: 最大的那个序列放在最前面，避免显存反复分配
       //tips2: 不同卡在同一个batch轮次内，处理的序列长度应该是一致的
       //tips3: 同样为了避免反复分配，第一个batch，让所有的卡多训一次
-      static int load_data_pass = 0;
 
       std::vector<std::pair<int, int>> offset_back;
       offset_back.reserve(offset.size() + thread_num_);
@@ -1840,14 +2253,6 @@ void SlotRecordDataset::PrepareTrain() {
           readers_[i % thread_num_].get())
           ->AddBatchOffset(offset[i]);
     }
-    
-    /*
-    if (LXCH_SWITCH) {
-      for (size_t i = 0; i < offset.size(); i++) {
-        VLOG(0) << "lxchdebugd " << i  << "  " << offset[i].first << "  " << offset[i].second;
-      }
-    }
-    */
     
   }
 #else

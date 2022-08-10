@@ -476,7 +476,7 @@ int PSGPUWorker::OpRunAndShapeCheck(OperatorBase& op,
       if (op.Info().HasOpProtoAndChecker()) {
         op_name = op.Info().Proto().type();
       }
-      VLOG(0) << "lxchaa  " << "index:" << lxch_index << "  op_name:" << op_name;
+
       RuntimeContext ctx(op.Inputs(), op.Outputs(), scope);
       RuntimeInferShapeContext infer_shape_ctx(op, ctx);
       auto outnames = op.Outputs();
@@ -498,23 +498,9 @@ int PSGPUWorker::OpRunAndShapeCheck(OperatorBase& op,
         for (size_t jj = 0; jj < dims.size(); jj++) {
           auto second_name = second_names[jj];
           auto dim = dims[jj];
-          size_t dim_size = 1;
-          for (int ii = 0; ii < dim.size(); ii++) {
-            dim_size *= dim[ii];
-          }
-          size_t bytes = 0;
-          Variable *cur_var = get<Variable *>(vars[jj]);
-          if (cur_var != nullptr) {
-            if (cur_var->IsType<LoDTensor>()) {
-              auto cur_tensor = cur_var->GetMutable<LoDTensor>();
-              if (cur_tensor != nullptr && cur_tensor->initialized()) {
-                bytes = cur_tensor->capacity();
-              }
-            }
-          }
-          VLOG(0) << "lxchbb  " << "index:" << lxch_index << "  op_name:" << op_name
-                  << "  biaozhu:" << first_name << "  cur_name:" << second_name
-                  << "  size:" << dim_size << "  bytes:" << bytes;
+          VLOG(0) << "lxchbb  " << "index:" << op_index << "  op_name:" << op_name
+                  << "  cur_name:" << second_name
+                  << "  dim:" << dim.to_str();
         }
       }
       */

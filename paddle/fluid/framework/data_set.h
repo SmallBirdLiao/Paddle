@@ -34,6 +34,59 @@
 namespace paddle {
 namespace framework {
 
+
+class BloomFilter {
+public:
+  explicit BloomFilter(int max_key_count) {
+    _bytes = max_key_count >> 3;
+    _hash_num = static_cast<size_t>(_bytes * 8 * 0.69 / max_key_count);
+    _bits = _bytes * 8;
+    if (_hash_num < 1) {
+      _hash_num = 1;
+    }
+    if (_hash_num > 10) {
+      _hash_num = 10;
+    }
+    _data = new char[_bytes];
+    memset(_data, 0, _bytes);
+  }
+  ~BloomFilter() {
+    delete []_data;
+  }
+  void add_key(const uint64_t &key) {
+    uint32_t h = hash(key);
+    const uint32_t delta = (h >> 17) | (h << 15);
+    for (uint8_t j = 0; j < _hash_num; j++) {
+      const uint32_t bitpos = h % _bits;
+      _data[bitpos / 8] |= (1 << (bitpos % 8));
+      h += delta;
+    }
+  }
+  bool match(const uint64_t &key) {
+    uint32_t h = hash(key);
+    const uint32_t delta = (h >> 17) | (h << 15);
+    for (size_t j = 0; j < _hash_num; j++) {
+      const uint32_t bitpos = h % _bits;
+      if ((_data[bitpos / 8] & (1 << (bitpos % 8))) == 0) return false;
+        h += delta;
+    }
+    return true;
+  }
+  void reset() {
+    memset(_data, 0, _bytes);
+  }
+private:
+  uint32_t hash(const uint64_t &key) {
+    uint64_t rotate_key = (key >> 33) | (key << 31);
+    return static_cast<uint32_t>((rotate_key >> 32) + (rotate_key & 0x00000000FFFFFFFF));
+  }
+private:
+  size_t _bytes;
+  uint8_t _hash_num;
+  size_t _bits;
+  char* _data;
+};
+
 // Dataset is a abstract class, which defines user interfaces
 // Example Usage:
 //    Dataset* dataset = DatasetFactory::CreateDataset("InMemoryDataset")

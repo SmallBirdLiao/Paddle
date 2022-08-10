@@ -1885,7 +1885,7 @@ class Executor(object):
             if program._heter_pipeline_opt is None:
                 self._default_executor.release_trainer(trainer_instance)
 
-        dataset._dynamic_adjust_after_train()
+        #dataset._dynamic_adjust_after_train()
         dataset._finish_to_run()
         if real_fetch_list:
             arr = scope.find_var('fetch').get_fetch_list()

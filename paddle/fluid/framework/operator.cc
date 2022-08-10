@@ -1521,7 +1521,8 @@ void OperatorWithKernel::RunImpl(const Scope& scope,
   }
 
   if (FLAGS_check_nan_inf) {
-//    framework::details::CheckOpHasNanOrInf(*this, exec_scope, place);
+//  if (1) {
+    framework::details::CheckOpHasNanOrInf(*this, exec_scope, place);
   }
 
   // To solve issue #15032, have a discussion with @Luotao for cpu inference,

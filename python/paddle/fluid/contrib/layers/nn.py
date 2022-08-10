@@ -44,7 +44,7 @@ __all__ = [
     'multiclass_nms2', 'search_pyramid_hash', 'shuffle_batch', 'partial_concat',
     'sparse_embedding', 'partial_sum', 'tdm_child', 'rank_attention',
     'tdm_sampler', 'batch_fc', '_pull_box_extended_sparse', 'bilateral_slice',
-    'correlation', 'fused_bn_add_act', 'fused_seqpool_cvm'
+    'correlation', 'fused_bn_add_act', 'fused_seqpool_cvm', 'seqpool_scatter'
 ]
 
 
@@ -521,6 +521,24 @@ def fused_embedding_seq_pool(input,
             'padding_idx': padding_idx
         })
     return out
+
+def seqpool_scatter(input,
+                    idx,
+                    pool_type,
+                    pad_value = 0.0):
+    helper = LayerHelper('seqpool_scatter', **locals())
+    output = helper.create_variable_for_type_inference(dtype=input.dtype)
+    helper.append_op(
+        type="seqpool_scatter",
+        inputs={"X": input,
+                "Idx": idx},
+        outputs={"Out": output},
+        attrs={
+            "pooltype": pool_type.upper(),
+            "pad_value": pad_value,
+        })
+    return output
+    
 
 
 def fused_seqpool_cvm(input,
