@@ -88,19 +88,23 @@ public:
     auto* out = context.Output<LoDTensor>("Out");
     T pad_value = static_cast<T>(context.Attr<float>("pad_value"));
     auto lod = in_idx->lod();
-    PADDLE_ENFORCE_EQ(lod.size(), 1, platform::errors::InvalidArgument(
+    PADDLE_ENFORCE_LE(lod.size(), 1, platform::errors::InvalidArgument(
                                         "Input(Idx) Tensor of SeqpoolScatterOp "
-                                        "LodLevel must be 1."));
-    PADDLE_ENFORCE_GE(lod[0].size(), 2, platform::errors::InvalidArgument(
-                                        "Input(Idx) Tensor of SeqpoolScatterOp "
-                                        "lod[0].size() must be large than 2"));
-    int dim0 = lod[0][1] - lod[0][0];
-    for (size_t i = 1; i < lod[0].size(); i++) {
-        int dim0_tmp = lod[0][i] - lod[0][i-1];
-        PADDLE_ENFORCE_EQ(dim0, dim0_tmp, platform::errors::InvalidArgument(
-                                        "Input(Idx) Tensor of SeqpoolScatterOp "
-                                        "each item must have same dim"));
+                                        "LodLevel must be 0 or 1."));
+    int dim0 = in_idx->dims()[1];
+    if (lod.size() == 1) {
+        PADDLE_ENFORCE_GE(lod[0].size(), 2, platform::errors::InvalidArgument(
+            "Input(Idx) Tensor of SeqpoolScatterOp "
+            "lod[0].size() must be large than 2"));
+        dim0 = lod[0][1] - lod[0][0];
+        for (size_t i = 1; i < lod[0].size(); i++) {
+            int dim0_tmp = lod[0][i] - lod[0][i-1];
+            PADDLE_ENFORCE_EQ(dim0, dim0_tmp, platform::errors::InvalidArgument(
+                        "Input(Idx) Tensor of SeqpoolScatterOp "
+                        "each item must have same dim"));
+        }
     }
+    
     dim0 -= 1;
     auto dims = in_x->dims();
     dims[1] = dim0;
