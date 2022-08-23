@@ -52,11 +52,6 @@ class SeqpoolScatterOp : public framework::OperatorWithKernel {
                           "The rank of Input(Idx) must be 2. But "
                           "received: Input(Idx) rank %u",
                           idx_dims.size()));
-      PADDLE_ENFORCE_EQ(idx_dims[1], 1,
-                      platform::errors::InvalidArgument(
-                          "The value of Input(idx).dim[1] must be 1. But "
-                          "received: Input(idx).dim[1] is %u",
-                          idx_dims[1]));
       if (!ctx->IsRuntime()) {
         auto x_lod_level = ctx->GetLoDLevel("X");
         PADDLE_ENFORCE_EQ(x_lod_level, 0,
@@ -65,11 +60,18 @@ class SeqpoolScatterOp : public framework::OperatorWithKernel {
                           "received: Input(X).lod_level is %u",
                           x_lod_level));
         auto idx_lod_level = ctx->GetLoDLevel("Idx");
-        PADDLE_ENFORCE_EQ(idx_lod_level, 1,
+        PADDLE_ENFORCE_LE(idx_lod_level, 1,
                       platform::errors::InvalidArgument(
-                          "The value of Input(idx).lod_level must be 1. But "
+                          "The value of Input(idx).lod_level must be 0 or 1. But "
                           "received: Input(idx).lod_level is %u",
                           idx_lod_level));
+        if (idx_lod_level == 1) {
+          PADDLE_ENFORCE_EQ(idx_dims[1], 1,
+                          platform::errors::InvalidArgument(
+                              "The value of Input(idx).dim[1] must be 1. But "
+                              "received: Input(idx).dim[1] is %u",
+                              idx_dims[1]));
+        }
       }
 
       ctx->SetOutputDim("Out", ctx->GetInputDim("X"));
