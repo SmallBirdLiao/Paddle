@@ -732,7 +732,6 @@ void PSGPUWrapper::BuildPull(std::shared_ptr<HeterContext> gpu_task) {
 void PSGPUWrapper::BuildGPUTask(std::shared_ptr<HeterContext> gpu_task) {
   int device_num = heter_devices_.size();
   platform::Timer timeline;
-  platform::Timer timeline_1;
   timeline.Start();
 
   std::vector<size_t> feature_keys_count(device_num);
@@ -755,15 +754,10 @@ void PSGPUWrapper::BuildGPUTask(std::shared_ptr<HeterContext> gpu_task) {
       size_max = std::max(size_max, feature_keys_count[i]);
     }
   }
-
-  timeline_1.Start();
   if (HeterPs_) {
     delete HeterPs_;
     HeterPs_ = nullptr;
   }
-  timeline_1.Pause();
-  auto lxch_1 = timeline_1.ElapsedSec();
-
   if (size_max <= 0) {
     VLOG(0) << "Skip build gpu ps cause feasign nums = " << size_max;
     return;
@@ -772,13 +766,10 @@ void PSGPUWrapper::BuildGPUTask(std::shared_ptr<HeterContext> gpu_task) {
   auto* accessor_wrapper_ptr =
       GlobalAccessorFactory::GetInstance().GetAccessorWrapper();
 
-  timeline_1.Start();
   HeterPs_ = HeterPsBase::get_instance(size_max, resource_, accessor_type_, optimizer_type_);
   HeterPs_->set_nccl_comm_and_size(inner_comms_, inter_comms_, node_size_);
   HeterPs_->set_sparse_sgd(optimizer_config_);
   HeterPs_->set_embedx_sgd(optimizer_config_);
-  timeline_1.Pause();
-  auto lxch_2 = timeline_1.ElapsedSec();
 
   // auto build_func = [this, &gpu_task, &feature_keys_count](int i) {
   //  VLOG(3) << "building table: " << i;
@@ -861,7 +852,6 @@ void PSGPUWrapper::BuildGPUTask(std::shared_ptr<HeterContext> gpu_task) {
       accessor_wrapper_ptr->BuildFill(val, device_dim_ptrs[k], cpu_accessor_, mf_dim);
     }
   };
-    timeline_1.Start();
     threads.resize(device_num * multi_mf_dim_);
     for (int i = 0; i < device_num; i++) {
       for (int j = 0; j < multi_mf_dim_; j++) {
@@ -872,10 +862,6 @@ void PSGPUWrapper::BuildGPUTask(std::shared_ptr<HeterContext> gpu_task) {
       t.join();
     }
     threads.clear();
-    timeline_1.Pause();
-    auto lxch_3 = timeline_1.ElapsedSec();
-
-    timeline_1.Start();
     // multi-thread process
     threads.resize(device_num * multi_mf_dim_ * thread_num);
     for (int i = 0; i < device_num; i++) {
@@ -889,10 +875,6 @@ void PSGPUWrapper::BuildGPUTask(std::shared_ptr<HeterContext> gpu_task) {
       t.join();
     }
     threads.clear();
-    timeline_1.Pause();
-    auto lxch_4 = timeline_1.ElapsedSec();
-
-    timeline_1.Start();
     threads.resize(device_num * multi_mf_dim_);
     for (int i = 0; i < device_num; i++) {
       for (int j = 0; j < multi_mf_dim_; j++) {
@@ -903,9 +885,6 @@ void PSGPUWrapper::BuildGPUTask(std::shared_ptr<HeterContext> gpu_task) {
       t.join();
     }
     threads.clear();
-    timeline_1.Pause();
-    auto lxch_5 = timeline_1.ElapsedSec();
-    VLOG(0) << "lxchddd  " << lxch_1 << "  " << lxch_2 << "  " << lxch_3 << "  " << lxch_4 << "  " << lxch_5;
   timeline.Pause();
   VLOG(0) << "GpuPs build table total costs: " << timeline.ElapsedSec()
           << " s.";
@@ -1296,7 +1275,7 @@ void PSGPUWrapper::PullSparse(const paddle::platform::Place& place,
   all_timer.Pause();
   time_1 += all_timer.ElapsedSec();
   time_2 += pull_gpups_timer.ElapsedSec();
-  VLOG(0) << "lxch GpuPs PullSparse total costs: " << all_timer.ElapsedSec()
+  VLOG(3) << "GpuPs PullSparse total costs: " << all_timer.ElapsedSec()
             << " s, of which pullsparse costs: " << pull_gpups_timer.ElapsedSec()
             << " s";
   VLOG(3) << "End PullSparse";
@@ -1359,7 +1338,7 @@ void PSGPUWrapper::PushSparseGrad(const paddle::platform::Place& place,
   all_timer.Pause();
   time_3 += all_timer.ElapsedSec();
   time_4 += push_gpups_timer.ElapsedSec();
-  VLOG(0) << "lxch PushSparseGrad total cost: " << all_timer.ElapsedSec()
+  VLOG(3) << "PushSparseGrad total cost: " << all_timer.ElapsedSec()
           << " s, of which GPUPS cost: " << push_gpups_timer.ElapsedSec()
           << " s";
   VLOG(3) << "End PushSparseGrad";
